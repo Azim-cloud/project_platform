@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, Form, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from jose import jwt
@@ -33,8 +33,10 @@ class Project(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, index=True)
     description = Column(Text, default="")
+    status = Column(String, default="active")
     owner_id = Column(Integer)
     created_at = Column(String, default=str(datetime.now()))
+    updated_at = Column(String, default=str(datetime.now()))
 
 Base.metadata.create_all(bind=engine)
 
@@ -347,7 +349,7 @@ PROJECTS_PAGE = """
     <title>Мои проекты</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
-<body>
+<body class="bg-light">
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
             <a class="navbar-brand" href="/projects">ProjectManager</a>
@@ -374,6 +376,14 @@ PROJECTS_PAGE = """
                                 <label>Описание</label>
                                 <textarea name="description" class="form-control" rows="3"></textarea>
                             </div>
+                            <div class="mb-3">
+                                <label>Статус</label>
+                                <select name="status" class="form-select">
+                                    <option value="active">Активный</option>
+                                    <option value="completed">Завершен</option>
+                                    <option value="archived">Архив</option>
+                                </select>
+                            </div>
                             <button type="submit" class="btn btn-success w-100">Создать</button>
                         </form>
                     </div>
@@ -385,7 +395,60 @@ PROJECTS_PAGE = """
                         <h4>Мои проекты</h4>
                     </div>
                     <div class="card-body">
-                        {projects_html}
+                        <!-- Статистика -->
+                        <div class="row mb-3 text-center">
+                            <div class="col-3">
+                                <div class="border rounded p-2">
+                                    <h5 class="text-primary">{total_count}</h5>
+                                    <small>Всего</small>
+                                </div>
+                            </div>
+                            <div class="col-3">
+                                <div class="border rounded p-2">
+                                    <h5 class="text-success">{active_count}</h5>
+                                    <small>Активные</small>
+                                </div>
+                            </div>
+                            <div class="col-3">
+                                <div class="border rounded p-2">
+                                    <h5 class="text-secondary">{completed_count}</h5>
+                                    <small>Завершены</small>
+                                </div>
+                            </div>
+                            <div class="col-3">
+                                <div class="border rounded p-2">
+                                    <h5 class="text-danger">{archived_count}</h5>
+                                    <small>Архив</small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Поиск и фильтры -->
+                        <div class="row mb-3">
+                            <div class="col-6">
+                                <form method="get" action="/projects">
+                                    <div class="input-group">
+                                        <input type="text" name="search" class="form-control" placeholder="Поиск..." value="{search_query}">
+                                        <button type="submit" class="btn btn-primary">Найти</button>
+                                        {search_clear_button}
+                                    </div>
+                                </form>
+                            </div>
+                            <div class="col-6">
+                                <div class="btn-group w-100">
+                                    <a href="/projects?status=all" class="btn btn-outline-secondary btn-sm">Все</a>
+                                    <a href="/projects?status=active" class="btn btn-outline-success btn-sm">Активные</a>
+                                    <a href="/projects?status=completed" class="btn btn-outline-secondary btn-sm">Завершенные</a>
+                                    <a href="/projects?status=archived" class="btn btn-outline-danger btn-sm">Архив</a>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Список проектов -->
+                        <div class="row">
+                            {projects_html}
+                        </div>
+                        {empty_message}
                     </div>
                 </div>
             </div>
@@ -493,19 +556,11 @@ async def forgot_password(email: str = Form(...), db: Session = Depends(get_db))
         return HTMLResponse(content=f"""
         <!DOCTYPE html>
         <html>
-        <head><title>Ссылка для сброса</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+        <head><title>Сброс пароля</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet"></head>
         <body class="bg-light">
             <div class="container mt-5">
-                <div class="row justify-content-center">
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header bg-success text-white"><h3>Ссылка для сброса пароля</h3></div>
-                            <div class="card-body">
-                                <a href="{reset_link}" class="btn btn-primary">Сбросить пароль</a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <div class="card"><div class="card-header bg-success"><h3>Ссылка для сброса</h3></div>
+                <div class="card-body"><a href="{reset_link}" class="btn btn-primary">Сбросить пароль</a></div></div>
             </div>
         </body>
         </html>
@@ -523,21 +578,15 @@ async def reset_password_page(token: str, db: Session = Depends(get_db)):
     <head><title>Сброс пароля</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet"></head>
     <body class="bg-light">
         <div class="container mt-5">
-            <div class="row justify-content-center">
-                <div class="col-md-6">
-                    <div class="card">
-                        <div class="card-header bg-info text-white"><h3>Сброс пароля</h3></div>
-                        <div class="card-body">
-                            <form method="post" action="/reset-password">
-                                <input type="hidden" name="token" value="{token}">
-                                <div class="mb-3"><label>Новый пароль</label><input type="password" name="new_password" class="form-control" required></div>
-                                <div class="mb-3"><label>Подтверждение</label><input type="password" name="confirm_password" class="form-control" required></div>
-                                <button type="submit" class="btn btn-info w-100">Сохранить</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <div class="card"><div class="card-header bg-info"><h3>Новый пароль</h3></div>
+            <div class="card-body">
+                <form method="post" action="/reset-password">
+                    <input type="hidden" name="token" value="{token}">
+                    <input type="password" name="new_password" class="form-control mb-2" placeholder="Новый пароль" required>
+                    <input type="password" name="confirm_password" class="form-control mb-2" placeholder="Подтверждение" required>
+                    <button type="submit" class="btn btn-info w-100">Сохранить</button>
+                </form>
+            </div></div>
         </div>
     </body>
     </html>
@@ -546,7 +595,7 @@ async def reset_password_page(token: str, db: Session = Depends(get_db)):
 @app.post("/reset-password")
 async def reset_password(token: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), db: Session = Depends(get_db)):
     if new_password != confirm_password:
-        return HTMLResponse(content="<h3>Пароли не совпадают! <a href='/reset-password?token={token}'>Назад</a></h3>")
+        return HTMLResponse(content=f"<h3>Пароли не совпадают! <a href='/reset-password?token={token}'>Назад</a></h3>")
     user = db.query(User).filter(User.reset_token == token).first()
     if not user:
         return HTMLResponse(content="<h3>Неверная ссылка! <a href='/forgot-password'>Попробовать снова</a></h3>")
@@ -554,29 +603,101 @@ async def reset_password(token: str = Form(...), new_password: str = Form(...), 
     user.reset_token = None
     user.reset_token_expires = None
     db.commit()
-    return HTMLResponse(content="<h3>Пароль успешно изменен! <a href='/login'>Войти</a></h3>")
+    return HTMLResponse(content="<h3>Пароль изменен! <a href='/login'>Войти</a></h3>")
+
+# ==================== ПРОЕКТЫ ====================
 
 @app.get("/projects")
-async def projects_list(request: Request, db: Session = Depends(get_db)):
+async def projects_list(
+    request: Request, 
+    search: str = "",
+    status: str = "all",
+    db: Session = Depends(get_db)
+):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
-    projects = db.query(Project).filter(Project.owner_id == user.id).all()
+    
+    query = db.query(Project).filter(Project.owner_id == user.id)
+    
+    if status != "all":
+        query = query.filter(Project.status == status)
+    
+    if search:
+        query = query.filter(
+            or_(
+                Project.name.contains(search),
+                Project.description.contains(search)
+            )
+        )
+    
+    projects = query.order_by(Project.created_at.desc()).all()
+    
+    total_count = db.query(Project).filter(Project.owner_id == user.id).count()
+    active_count = db.query(Project).filter(Project.owner_id == user.id, Project.status == "active").count()
+    completed_count = db.query(Project).filter(Project.owner_id == user.id, Project.status == "completed").count()
+    archived_count = db.query(Project).filter(Project.owner_id == user.id, Project.status == "archived").count()
+    
     if projects:
-        projects_html = '<div class="list-group">'
+        projects_html = ""
         for p in projects:
-            projects_html += f'<div class="list-group-item"><h5>{p.name}</h5><p>{p.description or ""}</p><small>{p.created_at}</small></div>'
-        projects_html += '</div>'
+            status_badge = ""
+            if p.status == "active":
+                status_badge = '<span class="badge bg-success">Активный</span>'
+            elif p.status == "completed":
+                status_badge = '<span class="badge bg-secondary">Завершен</span>'
+            else:
+                status_badge = '<span class="badge bg-danger">Архив</span>'
+            
+            projects_html += f"""
+            <div class="col-md-4 mb-3">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <h5>{p.name}</h5>
+                            {status_badge}
+                        </div>
+                        <p class="text-muted">{p.description[:100] if p.description else "Нет описания"}</p>
+                        <small class="text-muted">Создан: {p.created_at.split()[0] if p.created_at else "Недавно"}</small>
+                    </div>
+                </div>
+            </div>
+            """
+        empty_message = ""
     else:
-        projects_html = '<p>У вас пока нет проектов</p>'
-    return HTMLResponse(content=PROJECTS_PAGE.format(username=user.username, projects_html=projects_html))
+        projects_html = ""
+        empty_message = '<div class="col-12"><div class="alert alert-info">Нет проектов. Создайте первый!</div></div>'
+    
+    search_clear_button = ""
+    if search:
+        search_clear_button = f'<a href="/projects?status={status}" class="btn btn-outline-secondary">Очистить</a>'
+    else:
+        search_clear_button = ""
+    
+    return HTMLResponse(content=PROJECTS_PAGE.format(
+        total_count=total_count,
+        active_count=active_count,
+        completed_count=completed_count,
+        archived_count=archived_count,
+        projects_html=projects_html,
+        empty_message=empty_message,
+        search_query=search,
+        search_clear_button=search_clear_button
+    ))
 
 @app.post("/projects/create")
-async def create_project(request: Request, name: str = Form(...), description: str = Form(""), db: Session = Depends(get_db)):
+async def create_project(
+    request: Request,
+    name: str = Form(...),
+    description: str = Form(""),
+    status: str = Form("active"),
+    db: Session = Depends(get_db)
+):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
-    new_project = Project(name=name, description=description, owner_id=user.id)
+    
+    new_project = Project(name=name, description=description, status=status, owner_id=user.id)
     db.add(new_project)
     db.commit()
     return RedirectResponse("/projects", status_code=303)
