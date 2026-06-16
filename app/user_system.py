@@ -81,7 +81,7 @@ class Notification(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     title = Column(String)
     message = Column(Text)
-    type = Column(String, default="info")  # info, success, warning, danger
+    type = Column(String, default="info")
     is_read = Column(Boolean, default=False)
     link = Column(String, nullable=True)
     created_at = Column(String, default=str(datetime.now()))
@@ -92,7 +92,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    action = Column(String)  # created_task, updated_task, deleted_task, added_comment, etc.
+    action = Column(String)
     details = Column(Text)
     task_id = Column(Integer, nullable=True)
     project_id = Column(Integer, nullable=True)
@@ -100,6 +100,21 @@ class ActivityLog(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ==================== СОЗДАНИЕ АДМИНА ====================
+def create_first_admin(db: Session):
+    if db.query(User).count() == 0:
+        admin = User(
+            username="admin",
+            email="admin@admin.com",
+            full_name="Administrator",
+            hashed_password=hash_password("admin123"),
+            role="admin"
+        )
+        db.add(admin)
+        db.commit()
+        print("✅ Администратор создан: admin / admin123")
+
+# ==================== ПРИЛОЖЕНИЕ ====================
 app = FastAPI()
 SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
@@ -143,7 +158,6 @@ def generate_reset_token() -> str:
     return secrets.token_urlsafe(32)
 
 def add_notification(user_id: int, title: str, message: str, type: str = "info", link: str = None, db: Session = None):
-    """Создание уведомления"""
     notification = Notification(
         user_id=user_id,
         title=title,
@@ -155,7 +169,6 @@ def add_notification(user_id: int, title: str, message: str, type: str = "info",
     db.commit()
 
 def add_activity(user_id: int, action: str, details: str, task_id: int = None, project_id: int = None, db: Session = None):
-    """Создание записи активности"""
     activity = ActivityLog(
         user_id=user_id,
         action=action,
@@ -165,6 +178,9 @@ def add_activity(user_id: int, action: str, details: str, task_id: int = None, p
     )
     db.add(activity)
     db.commit()
+
+def is_admin(user):
+    return user and user.role == "admin"
 
 # ==================== HTML СТРАНИЦЫ ====================
 
@@ -253,11 +269,6 @@ LOGIN_PAGE = """
 </html>
 """
 
-# ==================== ДАЛЕЕ СТРАНИЦЫ ПРОФИЛЯ, ПРОЕКТОВ, ЗАДАЧ ====================
-# (здесь должны быть все остальные страницы: PROFILE_PAGE, PROJECTS_PAGE, TASKS_PAGE и т.д.)
-
-# Для экономии места, я скину полный файл отдельно. А пока продолжу остальные маршруты.
-
 # ==================== МАРШРУТЫ ====================
 
 @app.get("/")
@@ -292,68 +303,14 @@ async def login(username: str = Form(...), password: str = Form(...), db: Sessio
     response.set_cookie(key="access_token", value=token, httponly=True)
     return response
 
-# ==================== ПРОФИЛЬ ====================
-
-PROFILE_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Личный кабинет</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/projects">Проекты</a>
-                <a class="nav-link" href="/tasks">Задачи</a>
-                <a class="nav-link active" href="/profile">Профиль</a>
-                <a class="nav-link" href="/notifications"><i class="fas fa-bell"></i> {unread_count}</a>
-                <a class="nav-link" href="/logout">Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-md-6 mx-auto">
-                <div class="card">
-                    <div class="card-header bg-info text-white">
-                        <h4>Личный кабинет</h4>
-                    </div>
-                    <div class="card-body">
-                        <table class="table">
-                            <tr><td><strong>Имя пользователя:</strong></td><td>{username}</td></tr>
-                            <tr><td><strong>Полное имя:</strong></td><td>{full_name}</td></tr>
-                            <tr><td><strong>Email:</strong></td><td>{email}</td></tr>
-                            <tr><td><strong>Роль:</strong></td><td>{role}</td></tr>
-                            <tr><td><strong>Дата регистрации:</strong></td><td>{created_at}</td></tr>
-                        </table>
-                        <div class="d-grid gap-2">
-                            <a href="/profile/edit" class="btn btn-warning">Редактировать профиль</a>
-                            <a href="/profile/change-password" class="btn btn-danger">Сменить пароль</a>
-                            <a href="/notifications" class="btn btn-info">Уведомления {unread_count}</a>
-                            <a href="/activity" class="btn btn-secondary">Моя активность</a>
-                            <a href="/projects" class="btn btn-primary">Назад к проектам</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
 @app.get("/profile")
 async def profile(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
     
-    # Считаем непрочитанные уведомления
     unread_count = db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == False).count()
+    admin_link = '<a class="nav-link" href="/admin"><i class="fas fa-crown"></i> Админ-панель</a>' if is_admin(user) else ''
     
     return HTMLResponse(content=f"""
     <!DOCTYPE html>
@@ -375,6 +332,7 @@ async def profile(request: Request, db: Session = Depends(get_db)):
                         <i class="fas fa-bell"></i>
                         <span class="badge bg-danger">{unread_count}</span>
                     </a>
+                    {admin_link}
                     <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
                 </div>
             </div>
@@ -400,6 +358,7 @@ async def profile(request: Request, db: Session = Depends(get_db)):
                                 <a href="/profile/change-password" class="btn btn-danger"><i class="fas fa-key"></i> Сменить пароль</a>
                                 <a href="/notifications" class="btn btn-info"><i class="fas fa-bell"></i> Уведомления ({unread_count})</a>
                                 <a href="/activity" class="btn btn-secondary"><i class="fas fa-history"></i> Моя активность</a>
+                                {'<a href="/admin" class="btn btn-danger"><i class="fas fa-crown"></i> Админ-панель</a>' if is_admin(user) else ''}
                                 <a href="/projects" class="btn btn-primary"><i class="fas fa-arrow-left"></i> Назад к проектам</a>
                             </div>
                         </div>
@@ -512,91 +471,86 @@ async def reset_password(token: str = Form(...), new_password: str = Form(...), 
 
 # ==================== ПРОЕКТЫ ====================
 
-PROJECTS_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Мои проекты</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/tasks">Задачи</a>
-                <a class="nav-link" href="/profile">Профиль</a>
-                <a class="nav-link" href="/logout">Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header bg-success text-white">Создать проект</div>
-                    <div class="card-body">
-                        <form method="post" action="/projects/create">
-                            <input type="text" name="name" class="form-control mb-2" placeholder="Название" required>
-                            <textarea name="description" class="form-control mb-2" placeholder="Описание"></textarea>
-                            <select name="status" class="form-select mb-2">
-                                <option value="active">Активный</option>
-                                <option value="completed">Завершен</option>
-                                <option value="archived">Архив</option>
-                            </select>
-                            <button type="submit" class="btn btn-success w-100">Создать</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-8">
-                <div class="card">
-                    <div class="card-header bg-primary text-white">Мои проекты</div>
-                    <div class="card-body">
-                        <div class="row">
-                            {projects_html}
-                        </div>
-                        {empty_message}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
 @app.get("/projects")
 async def projects_list(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
     
+    admin_link = '<a class="nav-link" href="/admin"><i class="fas fa-crown"></i> Админ-панель</a>' if is_admin(user) else ''
+    
     projects = db.query(Project).filter(Project.owner_id == user.id).all()
     
-    if projects:
-        projects_html = ""
-        for p in projects:
-            projects_html += f"""
-            <div class="col-md-6 mb-2">
-                <div class="card">
-                    <div class="card-body">
-                        <h5>{p.name}</h5>
-                        <p>{p.description[:100] if p.description else ""}</p>
-                        <a href="/projects/{p.id}/tasks" class="btn btn-sm btn-primary">Задачи</a>
+    projects_html = ""
+    for p in projects:
+        projects_html += f"""
+        <div class="col-md-6 mb-2">
+            <div class="card">
+                <div class="card-body">
+                    <h5>{p.name}</h5>
+                    <p>{p.description[:100] if p.description else ""}</p>
+                    <a href="/projects/{p.id}/tasks" class="btn btn-sm btn-primary">Задачи</a>
+                </div>
+            </div>
+        </div>
+        """
+    
+    if not projects_html:
+        projects_html = '<div class="alert alert-info">Нет проектов</div>'
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Мои проекты</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <nav class="navbar navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects">ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/tasks">Задачи</a>
+                    <a class="nav-link" href="/profile">Профиль</a>
+                    {admin_link}
+                    <a class="nav-link" href="/logout">Выйти</a>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header bg-success text-white">Создать проект</div>
+                        <div class="card-body">
+                            <form method="post" action="/projects/create">
+                                <input type="text" name="name" class="form-control mb-2" placeholder="Название" required>
+                                <textarea name="description" class="form-control mb-2" placeholder="Описание"></textarea>
+                                <select name="status" class="form-select mb-2">
+                                    <option value="active">Активный</option>
+                                    <option value="completed">Завершен</option>
+                                    <option value="archived">Архив</option>
+                                </select>
+                                <button type="submit" class="btn btn-success w-100">Создать</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">Мои проекты</div>
+                        <div class="card-body">
+                            <div class="row">
+                                {projects_html}
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-            """
-        empty_message = ""
-    else:
-        projects_html = ""
-        empty_message = '<div class="alert alert-info">Нет проектов</div>'
-    
-    return HTMLResponse(content=PROJECTS_PAGE.format(
-        projects_html=projects_html,
-        empty_message=empty_message
-    ))
+        </div>
+    </body>
+    </html>
+    """)
 
 @app.post("/projects/create")
 async def create_project(request: Request, name: str = Form(...), description: str = Form(""), status: str = Form("active"), db: Session = Depends(get_db)):
@@ -608,347 +562,15 @@ async def create_project(request: Request, name: str = Form(...), description: s
     db.commit()
     return RedirectResponse("/projects", status_code=303)
 
-# ==================== ЗАДАЧИ С КОММЕНТАРИЯМИ ====================
-
-TASK_DETAIL_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>{task_title}</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/tasks">← Все задачи</a>
-                <a class="nav-link" href="/logout">Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-md-8">
-                <div class="card">
-                    <div class="card-header bg-primary text-white">
-                        <h4>{task_title}</h4>
-                    </div>
-                    <div class="card-body">
-                        <p><strong>Описание:</strong> {task_description}</p>
-                        <p><strong>Статус:</strong> {task_status}</p>
-                        <p><strong>Приоритет:</strong> {task_priority}</p>
-                        <p><strong>Проект:</strong> {project_name}</p>
-                        <p><strong>Создал:</strong> {creator_name}</p>
-                        <p><strong>Исполнитель:</strong> {assignee_name}</p>
-                        <p><strong>Создана:</strong> {created_at}</p>
-                        <div class="mt-3">
-                            <a href="/tasks/{task_id}/edit" class="btn btn-warning">Редактировать</a>
-                            <a href="/tasks/{task_id}/delete" class="btn btn-danger" onclick="return confirm('Удалить?')">Удалить</a>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Комментарии -->
-                <div class="card mt-4">
-                    <div class="card-header bg-secondary text-white">
-                        <h5><i class="fas fa-comments"></i> Комментарии ({comments_count})</h5>
-                    </div>
-                    <div class="card-body">
-                        {comments_html}
-                        <hr>
-                        <form method="post" action="/tasks/{task_id}/comment">
-                            <div class="input-group">
-                                <input type="text" name="content" class="form-control" placeholder="Написать комментарий..." required>
-                                <button type="submit" class="btn btn-primary">Отправить</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Боковая панель -->
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header bg-info text-white">
-                        <h5><i class="fas fa-history"></i> Активность</h5>
-                    </div>
-                    <div class="card-body">
-                        {activity_html}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-@app.get("/tasks/{task_id}")
-async def task_detail(task_id: int, request: Request, db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    task = db.query(Task).filter(Task.id == task_id).first()
-    if not task:
-        return HTMLResponse("<h3>Задача не найдена!</h3>")
-    
-    # Комментарии
-    comments = db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at.desc()).all()
-    comments_html = ""
-    for c in comments:
-        comment_user = db.query(User).filter(User.id == c.user_id).first()
-        username = comment_user.username if comment_user else "Unknown"
-        comments_html += f"""
-        <div class="border-bottom p-2">
-            <strong>{username}</strong> <small class="text-muted">{c.created_at}</small>
-            <p>{c.content}</p>
-        </div>
-        """
-    
-    if not comments_html:
-        comments_html = '<p class="text-muted">Нет комментариев</p>'
-    
-    # Активность
-    activities = db.query(ActivityLog).filter(
-        (ActivityLog.task_id == task_id) | (ActivityLog.user_id == user.id)
-    ).order_by(desc(ActivityLog.created_at)).limit(10).all()
-    
-    activity_html = ""
-    for a in activities:
-        activity_html += f"""
-        <div class="border-bottom p-2 small">
-            <span>{a.action}: {a.details[:50]}</span>
-            <br><small class="text-muted">{a.created_at}</small>
-        </div>
-        """
-    
-    if not activity_html:
-        activity_html = '<p class="text-muted">Нет активности</p>'
-    
-    status_names = {"todo": "To Do", "in_progress": "В работе", "review": "На проверке", "done": "Выполнено"}
-    priority_names = {"low": "Низкий", "medium": "Средний", "high": "Высокий", "urgent": "Срочный"}
-    
-    creator = db.query(User).filter(User.id == task.created_by).first()
-    assignee = db.query(User).filter(User.id == task.assigned_to).first() if task.assigned_to else None
-    project = db.query(Project).filter(Project.id == task.project_id).first()
-    
-    return HTMLResponse(content=TASK_DETAIL_PAGE.format(
-        task_id=task.id,
-        task_title=task.title,
-        task_description=task.description or "Нет описания",
-        task_status=status_names.get(task.status, task.status),
-        task_priority=priority_names.get(task.priority, task.priority),
-        project_name=project.name if project else "Без проекта",
-        creator_name=creator.username if creator else "Unknown",
-        assignee_name=assignee.username if assignee else "Не назначен",
-        created_at=task.created_at,
-        comments_count=len(comments),
-        comments_html=comments_html,
-        activity_html=activity_html
-    ))
-
-@app.post("/tasks/{task_id}/comment")
-async def add_comment(task_id: int, request: Request, content: str = Form(...), db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    new_comment = Comment(content=content, task_id=task_id, user_id=user.id)
-    db.add(new_comment)
-    db.commit()
-    
-    # Добавляем уведомление
-    task = db.query(Task).filter(Task.id == task_id).first()
-    if task and task.created_by != user.id:
-        add_notification(
-            user_id=task.created_by,
-            title="Новый комментарий",
-            message=f"{user.username} оставил комментарий к задаче '{task.title}'",
-            type="info",
-            link=f"/tasks/{task_id}",
-            db=db
-        )
-    
-    # Логируем активность
-    add_activity(
-        user_id=user.id,
-        action="Добавил комментарий",
-        details=f"К задаче '{task.title}'",
-        task_id=task_id,
-        db=db
-    )
-    
-    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
-
-# ==================== УВЕДОМЛЕНИЯ ====================
-
-NOTIFICATIONS_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Уведомления</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/profile">Профиль</a>
-                <a class="nav-link" href="/logout">Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="d-flex justify-content-between">
-            <h1><i class="fas fa-bell"></i> Уведомления</h1>
-            <a href="/notifications/mark-all-read" class="btn btn-secondary">Все прочитаны</a>
-        </div>
-        <hr>
-        <div class="row">
-            <div class="col-md-12">
-                {notifications_html}
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-@app.get("/notifications")
-async def notifications_list(request: Request, db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    notifications = db.query(Notification).filter(Notification.user_id == user.id).order_by(desc(Notification.created_at)).all()
-    
-    notifications_html = ""
-    for n in notifications:
-        is_read = "✅" if n.is_read else "🔴"
-        type_color = {
-            "info": "primary",
-            "success": "success",
-            "warning": "warning",
-            "danger": "danger"
-        }.get(n.type, "primary")
-        
-        notifications_html += f"""
-        <div class="card mb-2 border-{type_color}">
-            <div class="card-body">
-                <div class="d-flex justify-content-between">
-                    <h6>{n.title} {is_read}</h6>
-                    <small class="text-muted">{n.created_at}</small>
-                </div>
-                <p>{n.message}</p>
-                <div>
-                    <a href="/notifications/{n.id}/read" class="btn btn-sm btn-outline-primary">Прочитано</a>
-                    {f'<a href="{n.link}" class="btn btn-sm btn-outline-secondary">Перейти</a>' if n.link else ''}
-                </div>
-            </div>
-        </div>
-        """
-    
-    if not notifications_html:
-        notifications_html = '<div class="alert alert-info">У вас нет уведомлений</div>'
-    
-    return HTMLResponse(content=NOTIFICATIONS_PAGE.format(
-        notifications_html=notifications_html
-    ))
-
-@app.get("/notifications/{notification_id}/read")
-async def mark_notification_read(notification_id: int, request: Request, db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    notification = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id == user.id).first()
-    if notification:
-        notification.is_read = True
-        db.commit()
-    
-    return RedirectResponse("/notifications", status_code=303)
-
-@app.get("/notifications/mark-all-read")
-async def mark_all_notifications_read(request: Request, db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == False).update({"is_read": True})
-    db.commit()
-    
-    return RedirectResponse("/notifications", status_code=303)
-
-# ==================== АКТИВНОСТЬ ====================
-
-ACTIVITY_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Моя активность</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body>
-    <nav class="navbar navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/profile">Профиль</a>
-                <a class="nav-link" href="/logout">Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <h1><i class="fas fa-history"></i> Моя активность</h1>
-        <hr>
-        <div class="row">
-            <div class="col-md-12">
-                {activity_html}
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-@app.get("/activity")
-async def activity_list(request: Request, db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    activities = db.query(ActivityLog).filter(ActivityLog.user_id == user.id).order_by(desc(ActivityLog.created_at)).limit(50).all()
-    
-    activity_html = ""
-    for a in activities:
-        activity_html += f"""
-        <div class="border-bottom p-2">
-            <strong>{a.action}</strong>
-            <p>{a.details}</p>
-            <small class="text-muted">{a.created_at}</small>
-        </div>
-        """
-    
-    if not activity_html:
-        activity_html = '<div class="alert alert-info">Нет активности</div>'
-    
-    return HTMLResponse(content=ACTIVITY_PAGE.format(
-        activity_html=activity_html
-    ))
-
-# ==================== ОСТАЛЬНЫЕ МАРШРУТЫ ====================
+# ==================== ЗАДАЧИ ====================
 
 @app.get("/tasks")
 async def tasks_list(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
+    
+    admin_link = '<a class="nav-link" href="/admin"><i class="fas fa-crown"></i> Админ-панель</a>' if is_admin(user) else ''
     
     tasks = db.query(Task).filter(Task.created_by == user.id).order_by(desc(Task.created_at)).all()
     
@@ -992,6 +614,7 @@ async def tasks_list(request: Request, db: Session = Depends(get_db)):
                     <a class="nav-link" href="/projects">Проекты</a>
                     <a class="nav-link active" href="/tasks">Задачи</a>
                     <a class="nav-link" href="/profile">Профиль</a>
+                    {admin_link}
                     <a class="nav-link" href="/logout">Выйти</a>
                 </div>
             </div>
@@ -1084,7 +707,6 @@ async def create_task(request: Request, title: str = Form(...), description: str
     db.add(new_task)
     db.commit()
     
-    # Логируем активность
     add_activity(
         user_id=user.id,
         action="Создал задачу",
@@ -1096,6 +718,154 @@ async def create_task(request: Request, title: str = Form(...), description: str
     
     return RedirectResponse("/tasks", status_code=303)
 
+@app.get("/tasks/{task_id}")
+async def task_detail(task_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        return HTMLResponse("<h3>Задача не найдена!</h3>")
+    
+    comments = db.query(Comment).filter(Comment.task_id == task_id).order_by(desc(Comment.created_at)).all()
+    comments_html = ""
+    for c in comments:
+        comment_user = db.query(User).filter(User.id == c.user_id).first()
+        username = comment_user.username if comment_user else "Unknown"
+        comments_html += f"""
+        <div class="border-bottom p-2">
+            <strong>{username}</strong> <small class="text-muted">{c.created_at}</small>
+            <p>{c.content}</p>
+        </div>
+        """
+    
+    if not comments_html:
+        comments_html = '<p class="text-muted">Нет комментариев</p>'
+    
+    activities = db.query(ActivityLog).filter(ActivityLog.task_id == task_id).order_by(desc(ActivityLog.created_at)).limit(10).all()
+    activity_html = ""
+    for a in activities:
+        activity_html += f"""
+        <div class="border-bottom p-2 small">
+            <span>{a.action}: {a.details[:50]}</span>
+            <br><small class="text-muted">{a.created_at}</small>
+        </div>
+        """
+    
+    if not activity_html:
+        activity_html = '<p class="text-muted">Нет активности</p>'
+    
+    status_names = {"todo": "To Do", "in_progress": "В работе", "review": "На проверке", "done": "Выполнено"}
+    priority_names = {"low": "Низкий", "medium": "Средний", "high": "Высокий", "urgent": "Срочный"}
+    
+    creator = db.query(User).filter(User.id == task.created_by).first()
+    assignee = db.query(User).filter(User.id == task.assigned_to).first() if task.assigned_to else None
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{task.title}</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects">ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/tasks">← Все задачи</a>
+                    <a class="nav-link" href="/logout">Выйти</a>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h4>{task.title}</h4>
+                        </div>
+                        <div class="card-body">
+                            <p><strong>Описание:</strong> {task.description or "Нет описания"}</p>
+                            <p><strong>Статус:</strong> {status_names.get(task.status, task.status)}</p>
+                            <p><strong>Приоритет:</strong> {priority_names.get(task.priority, task.priority)}</p>
+                            <p><strong>Проект:</strong> {project.name if project else "Без проекта"}</p>
+                            <p><strong>Создал:</strong> {creator.username if creator else "Unknown"}</p>
+                            <p><strong>Исполнитель:</strong> {assignee.username if assignee else "Не назначен"}</p>
+                            <p><strong>Создана:</strong> {task.created_at}</p>
+                            <div class="mt-3">
+                                <a href="/tasks/{task.id}/edit" class="btn btn-warning">Редактировать</a>
+                                <a href="/tasks/{task.id}/delete" class="btn btn-danger" onclick="return confirm('Удалить?')">Удалить</a>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card mt-4">
+                        <div class="card-header bg-secondary text-white">
+                            <h5><i class="fas fa-comments"></i> Комментарии ({len(comments)})</h5>
+                        </div>
+                        <div class="card-body">
+                            {comments_html}
+                            <hr>
+                            <form method="post" action="/tasks/{task.id}/comment">
+                                <div class="input-group">
+                                    <input type="text" name="content" class="form-control" placeholder="Написать комментарий..." required>
+                                    <button type="submit" class="btn btn-primary">Отправить</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header bg-info text-white">
+                            <h5><i class="fas fa-history"></i> Активность</h5>
+                        </div>
+                        <div class="card-body">
+                            {activity_html}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
+
+@app.post("/tasks/{task_id}/comment")
+async def add_comment(task_id: int, request: Request, content: str = Form(...), db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    new_comment = Comment(content=content, task_id=task_id, user_id=user.id)
+    db.add(new_comment)
+    db.commit()
+    
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if task and task.created_by != user.id:
+        add_notification(
+            user_id=task.created_by,
+            title="Новый комментарий",
+            message=f"{user.username} оставил комментарий к задаче '{task.title}'",
+            type="info",
+            link=f"/tasks/{task_id}",
+            db=db
+        )
+    
+    add_activity(
+        user_id=user.id,
+        action="Добавил комментарий",
+        details=f"К задаче '{task.title}'",
+        task_id=task_id,
+        db=db
+    )
+    
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
 @app.get("/tasks/{task_id}/edit")
 async def edit_task_page(task_id: int, request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
@@ -1104,7 +874,7 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
     
     task = db.query(Task).filter(Task.id == task_id, Task.created_by == user.id).first()
     if not task:
-        return HTMLResponse(content="<h3>Задача не найдена!</h3>")
+        return HTMLResponse("<h3>Задача не найдена!</h3>")
     
     projects = db.query(Project).filter(Project.owner_id == user.id).all()
     projects_options = ""
@@ -1132,7 +902,6 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
                 </div>
             </div>
         </nav>
-        
         <div class="container mt-4">
             <div class="row justify-content-center">
                 <div class="col-md-8">
@@ -1142,19 +911,14 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
                         </div>
                         <div class="card-body">
                             <form method="post" action="/tasks/{task_id}/edit">
-                                <!-- Название -->
                                 <div class="mb-3">
                                     <label class="form-label"><i class="fas fa-heading"></i> Название <span class="text-danger">*</span></label>
                                     <input type="text" name="title" class="form-control form-control-lg" value="{task.title}" required>
                                 </div>
-                                
-                                <!-- Описание -->
                                 <div class="mb-3">
                                     <label class="form-label"><i class="fas fa-align-left"></i> Описание</label>
                                     <textarea name="description" class="form-control" rows="4">{task.description or ""}</textarea>
                                 </div>
-                                
-                                <!-- Статус и Приоритет -->
                                 <div class="row">
                                     <div class="col-md-6">
                                         <div class="mb-3">
@@ -1179,16 +943,12 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
                                         </div>
                                     </div>
                                 </div>
-                                
-                                <!-- Проект -->
                                 <div class="mb-3">
                                     <label class="form-label"><i class="fas fa-folder"></i> Проект <span class="text-danger">*</span></label>
                                     <select name="project_id" class="form-select" required>
                                         {projects_options}
                                     </select>
                                 </div>
-                                
-                                <!-- Кнопки -->
                                 <div class="d-grid gap-2 d-md-flex justify-content-md-end">
                                     <a href="/tasks" class="btn btn-secondary">
                                         <i class="fas fa-times"></i> Отмена
@@ -1200,8 +960,6 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
                             </form>
                         </div>
                     </div>
-                    
-                    <!-- Дополнительная информация -->
                     <div class="card shadow mt-3">
                         <div class="card-header bg-light">
                             <h6><i class="fas fa-info-circle"></i> Информация о задаче</h6>
@@ -1223,7 +981,6 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
                 </div>
             </div>
         </div>
-        
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
     </html>
@@ -1335,37 +1092,21 @@ async def project_tasks(project_id: int, request: Request, db: Session = Depends
                 <div class="card shadow-sm h-100">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start">
-                            <h5 class="card-title">
-                                <i class="fas fa-tasks text-primary"></i> {t.title}
-                            </h5>
+                            <h5 class="card-title">{t.title}</h5>
                             <span class="badge bg-{status_color}">{status_text}</span>
                         </div>
                         <p class="card-text text-muted mt-2">{t.description[:100] if t.description else "Нет описания"}</p>
-                        <div class="mt-2">
-                            <small class="text-muted">
-                                <i class="fas fa-calendar"></i> {t.created_at.split()[0] if t.created_at else "Недавно"}
-                            </small>
-                            <small class="text-muted ms-3">
-                                <i class="fas fa-tag"></i> {t.priority}
-                            </small>
-                        </div>
                         <div class="mt-3">
-                            <a href="/tasks/{t.id}" class="btn btn-sm btn-outline-primary">
-                                <i class="fas fa-eye"></i> Открыть
-                            </a>
-                            <a href="/tasks/{t.id}/edit" class="btn btn-sm btn-outline-warning">
-                                <i class="fas fa-edit"></i>
-                            </a>
-                            <a href="/tasks/{t.id}/delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить задачу?')">
-                                <i class="fas fa-trash"></i>
-                            </a>
+                            <a href="/tasks/{t.id}" class="btn btn-sm btn-outline-primary">Открыть</a>
+                            <a href="/tasks/{t.id}/edit" class="btn btn-sm btn-outline-warning">Редактировать</a>
+                            <a href="/tasks/{t.id}/delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить?')">Удалить</a>
                         </div>
                     </div>
                 </div>
             </div>
             """
     else:
-        tasks_html = '<div class="col-12"><div class="alert alert-info text-center">В этом проекте пока нет задач</div></div>'
+        tasks_html = '<div class="col-12"><div class="alert alert-info">В этом проекте пока нет задач</div></div>'
     
     return HTMLResponse(content=f"""
     <!DOCTYPE html>
@@ -1375,62 +1116,479 @@ async def project_tasks(project_id: int, request: Request, db: Session = Depends
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     </head>
-    <body class="bg-light">
-        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <body>
+        <nav class="navbar navbar-dark bg-dark">
             <div class="container">
-                <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
+                <a class="navbar-brand" href="/projects">ProjectManager</a>
                 <div class="navbar-nav ms-auto">
-                    <a class="nav-link" href="/projects"><i class="fas fa-folder"></i> Проекты</a>
-                    <a class="nav-link" href="/tasks"><i class="fas fa-check-square"></i> Задачи</a>
-                    <a class="nav-link" href="/profile"><i class="fas fa-user"></i> Профиль</a>
-                    <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+                    <a class="nav-link" href="/projects">Проекты</a>
+                    <a class="nav-link" href="/logout">Выйти</a>
                 </div>
             </div>
         </nav>
-        
         <div class="container mt-4">
-            <!-- Заголовок -->
-            <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2><i class="fas fa-project-diagram"></i> {project.name}</h2>
+            <p class="text-muted">{project.description or "Описание отсутствует"}</p>
+            <hr>
+            <div class="row">
+                {tasks_html}
+            </div>
+            <a href="/projects" class="btn btn-secondary mt-3">← Назад</a>
+        </div>
+    </body>
+    </html>
+    """)
+
+# ==================== УВЕДОМЛЕНИЯ И АКТИВНОСТЬ ====================
+
+@app.get("/notifications")
+async def notifications_list(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    notifications = db.query(Notification).filter(Notification.user_id == user.id).order_by(desc(Notification.created_at)).all()
+    
+    notifications_html = ""
+    for n in notifications:
+        is_read = "✅" if n.is_read else "🔴"
+        type_color = {"info": "primary", "success": "success", "warning": "warning", "danger": "danger"}.get(n.type, "primary")
+        notifications_html += f"""
+        <div class="card mb-2 border-{type_color}">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <h6>{n.title} {is_read}</h6>
+                    <small class="text-muted">{n.created_at}</small>
+                </div>
+                <p>{n.message}</p>
                 <div>
-                    <a href="/projects" class="btn btn-outline-secondary btn-sm">
-                        <i class="fas fa-arrow-left"></i> Назад
-                    </a>
-                    <h2 class="d-inline-block ms-3">
-                        <i class="fas fa-project-diagram text-primary"></i> {project.name}
-                    </h2>
-                </div>
-                <a href="/tasks" class="btn btn-success">
-                    <i class="fas fa-plus"></i> Создать задачу
-                </a>
-            </div>
-            
-            <!-- Описание проекта -->
-            <div class="card shadow-sm mb-4">
-                <div class="card-body">
-                    <p class="text-muted">{project.description or "Описание отсутствует"}</p>
-                    <small class="text-muted">
-                        <i class="fas fa-calendar"></i> Создан: {project.created_at.split()[0] if project.created_at else "Недавно"}
-                    </small>
+                    <a href="/notifications/{n.id}/read" class="btn btn-sm btn-outline-primary">Прочитано</a>
+                    {f'<a href="{n.link}" class="btn btn-sm btn-outline-secondary">Перейти</a>' if n.link else ''}
                 </div>
             </div>
-            
-            <!-- Задачи -->
-            <div class="card shadow-sm">
-                <div class="card-header bg-primary text-white">
-                    <h5><i class="fas fa-tasks"></i> Задачи проекта</h5>
+        </div>
+        """
+    
+    if not notifications_html:
+        notifications_html = '<div class="alert alert-info">У вас нет уведомлений</div>'
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Уведомления</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects">ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/profile">Профиль</a>
+                    <a class="nav-link" href="/logout">Выйти</a>
                 </div>
-                <div class="card-body">
-                    <div class="row">
-                        {tasks_html}
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="d-flex justify-content-between">
+                <h1><i class="fas fa-bell"></i> Уведомления</h1>
+                <a href="/notifications/mark-all-read" class="btn btn-secondary">Все прочитаны</a>
+            </div>
+            <hr>
+            <div class="row">
+                <div class="col-md-12">
+                    {notifications_html}
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
+
+@app.get("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    notification = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id == user.id).first()
+    if notification:
+        notification.is_read = True
+        db.commit()
+    
+    return RedirectResponse("/notifications", status_code=303)
+
+@app.get("/notifications/mark-all-read")
+async def mark_all_notifications_read(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == False).update({"is_read": True})
+    db.commit()
+    
+    return RedirectResponse("/notifications", status_code=303)
+
+@app.get("/activity")
+async def activity_list(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    activities = db.query(ActivityLog).filter(ActivityLog.user_id == user.id).order_by(desc(ActivityLog.created_at)).limit(50).all()
+    
+    activity_html = ""
+    for a in activities:
+        activity_html += f"""
+        <div class="border-bottom p-2">
+            <strong>{a.action}</strong>
+            <p>{a.details}</p>
+            <small class="text-muted">{a.created_at}</small>
+        </div>
+        """
+    
+    if not activity_html:
+        activity_html = '<div class="alert alert-info">Нет активности</div>'
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Моя активность</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects">ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/profile">Профиль</a>
+                    <a class="nav-link" href="/logout">Выйти</a>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <h1><i class="fas fa-history"></i> Моя активность</h1>
+            <hr>
+            <div class="row">
+                <div class="col-md-12">
+                    {activity_html}
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
+
+# ==================== АДМИН-ПАНЕЛЬ ====================
+
+ADMIN_DASHBOARD_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Админ-панель</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/admin"><i class="fas fa-crown"></i> Админ-панель</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/admin"><i class="fas fa-dashboard"></i> Дашборд</a>
+                <a class="nav-link" href="/admin/users"><i class="fas fa-users"></i> Пользователи</a>
+                <a class="nav-link" href="/admin/projects"><i class="fas fa-folder"></i> Проекты</a>
+                <a class="nav-link" href="/projects"><i class="fas fa-arrow-left"></i> На сайт</a>
+                <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <h1><i class="fas fa-dashboard text-primary"></i> Панель управления</h1>
+        <p class="text-muted">Добро пожаловать в административную панель, {username}!</p>
+        <div class="row mt-4">
+            <div class="col-md-3">
+                <div class="card text-white bg-primary shadow">
+                    <div class="card-body">
+                        <h5><i class="fas fa-users"></i> Пользователи</h5>
+                        <h2>{total_users}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-success shadow">
+                    <div class="card-body">
+                        <h5><i class="fas fa-folder"></i> Проекты</h5>
+                        <h2>{total_projects}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-warning shadow">
+                    <div class="card-body">
+                        <h5><i class="fas fa-tasks"></i> Задачи</h5>
+                        <h2>{total_tasks}</h2>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card text-white bg-info shadow">
+                    <div class="card-body">
+                        <h5><i class="fas fa-comments"></i> Комментарии</h5>
+                        <h2>{total_comments}</h2>
                     </div>
                 </div>
             </div>
         </div>
-        
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    </body>
-    </html>
-    """)
+        <div class="card shadow mt-4">
+            <div class="card-header bg-dark text-white">
+                <h5><i class="fas fa-clock"></i> Последняя активность</h5>
+            </div>
+            <div class="card-body">
+                {activity_html}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+ADMIN_USERS_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Управление пользователями</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/admin"><i class="fas fa-crown"></i> Админ-панель</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/admin"><i class="fas fa-dashboard"></i> Дашборд</a>
+                <a class="nav-link active" href="/admin/users"><i class="fas fa-users"></i> Пользователи</a>
+                <a class="nav-link" href="/admin/projects"><i class="fas fa-folder"></i> Проекты</a>
+                <a class="nav-link" href="/projects"><i class="fas fa-arrow-left"></i> На сайт</a>
+                <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <h1><i class="fas fa-users text-primary"></i> Пользователи</h1>
+        <hr>
+        <div class="card shadow">
+            <div class="card-body">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Имя пользователя</th>
+                            <th>Email</th>
+                            <th>Роль</th>
+                            <th>Активен</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {users_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+ADMIN_PROJECTS_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Управление проектами</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/admin"><i class="fas fa-crown"></i> Админ-панель</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/admin"><i class="fas fa-dashboard"></i> Дашборд</a>
+                <a class="nav-link" href="/admin/users"><i class="fas fa-users"></i> Пользователи</a>
+                <a class="nav-link active" href="/admin/projects"><i class="fas fa-folder"></i> Проекты</a>
+                <a class="nav-link" href="/projects"><i class="fas fa-arrow-left"></i> На сайт</a>
+                <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <h1><i class="fas fa-folder text-primary"></i> Проекты</h1>
+        <hr>
+        <div class="card shadow">
+            <div class="card-body">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Название</th>
+                            <th>Владелец</th>
+                            <th>Статус</th>
+                            <th>Задачи</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {projects_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+# ==================== АДМИН МАРШРУТЫ ====================
+
+@app.get("/admin")
+async def admin_dashboard(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user or not is_admin(user):
+        return HTMLResponse("<h1>403 Доступ запрещен</h1><p>Только для администраторов</p>")
+    
+    total_users = db.query(User).count()
+    total_projects = db.query(Project).count()
+    total_tasks = db.query(Task).count()
+    total_comments = db.query(Comment).count()
+    
+    activities = db.query(ActivityLog).order_by(desc(ActivityLog.created_at)).limit(10).all()
+    activity_html = ""
+    for a in activities:
+        user_obj = db.query(User).filter(User.id == a.user_id).first()
+        username = user_obj.username if user_obj else "Unknown"
+        activity_html += f"""
+        <div class="border-bottom p-2">
+            <strong>{username}</strong> - {a.action}
+            <p class="small text-muted">{a.details}</p>
+            <small>{a.created_at}</small>
+        </div>
+        """
+    
+    if not activity_html:
+        activity_html = '<p class="text-muted">Нет активности</p>'
+    
+    return HTMLResponse(content=ADMIN_DASHBOARD_PAGE.format(
+        username=user.username,
+        total_users=total_users,
+        total_projects=total_projects,
+        total_tasks=total_tasks,
+        total_comments=total_comments,
+        activity_html=activity_html
+    ))
+
+@app.get("/admin/users")
+async def admin_users(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user or not is_admin(user):
+        return HTMLResponse("<h1>403 Доступ запрещен</h1>")
+    
+    users = db.query(User).all()
+    users_html = ""
+    for u in users:
+        role_badge = "bg-primary" if u.role == "admin" else "bg-secondary"
+        active_badge = "bg-success" if u.is_active else "bg-danger"
+        users_html += f"""
+        <tr>
+            <td>{u.id}</td>
+            <td>{u.username}</td>
+            <td>{u.email}</td>
+            <td><span class="badge {role_badge}">{u.role}</span></td>
+            <td><span class="badge {active_badge}">{'Да' if u.is_active else 'Нет'}</span></td>
+            <td>
+                <form method="post" action="/admin/users/{u.id}/toggle" style="display:inline">
+                    <button class="btn btn-sm btn-outline-warning">
+                        {'Деактивировать' if u.is_active else 'Активировать'}
+                    </button>
+                </form>
+                <form method="post" action="/admin/users/{u.id}/make-admin" style="display:inline">
+                    <button class="btn btn-sm btn-outline-primary">Сделать админом</button>
+                </form>
+            </td>
+        </tr>
+        """
+    
+    return HTMLResponse(content=ADMIN_USERS_PAGE.format(users_html=users_html))
+
+@app.post("/admin/users/{user_id}/toggle")
+async def admin_toggle_user(user_id: int, request: Request, db: Session = Depends(get_db)):
+    admin_user = get_current_user(request, db)
+    if not admin_user or not is_admin(admin_user):
+        return HTMLResponse("<h1>403 Доступ запрещен</h1>")
+    
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if target_user:
+        target_user.is_active = not target_user.is_active
+        db.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+@app.post("/admin/users/{user_id}/make-admin")
+async def admin_make_admin(user_id: int, request: Request, db: Session = Depends(get_db)):
+    admin_user = get_current_user(request, db)
+    if not admin_user or not is_admin(admin_user):
+        return HTMLResponse("<h1>403 Доступ запрещен</h1>")
+    
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if target_user:
+        target_user.role = "admin"
+        db.commit()
+    return RedirectResponse("/admin/users", status_code=303)
+
+@app.get("/admin/projects")
+async def admin_projects(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user or not is_admin(user):
+        return HTMLResponse("<h1>403 Доступ запрещен</h1>")
+    
+    projects = db.query(Project).all()
+    projects_html = ""
+    for p in projects:
+        owner = db.query(User).filter(User.id == p.owner_id).first()
+        owner_name = owner.username if owner else "Unknown"
+        tasks_count = db.query(Task).filter(Task.project_id == p.id).count()
+        status_badge = "bg-success" if p.status == "active" else "bg-secondary" if p.status == "completed" else "bg-danger"
+        projects_html += f"""
+        <tr>
+            <td>{p.id}</td>
+            <td>{p.name}</td>
+            <td>{owner_name}</td>
+            <td><span class="badge {status_badge}">{p.status}</span></td>
+            <td>{tasks_count}</td>
+            <td>
+                <form method="post" action="/admin/projects/{p.id}/delete" style="display:inline" onsubmit="return confirm('Удалить проект?')">
+                    <button class="btn btn-sm btn-outline-danger">Удалить</button>
+                </form>
+            </td>
+        </tr>
+        """
+    
+    return HTMLResponse(content=ADMIN_PROJECTS_PAGE.format(projects_html=projects_html))
+
+@app.post("/admin/projects/{project_id}/delete")
+async def admin_delete_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    admin_user = get_current_user(request, db)
+    if not admin_user or not is_admin(admin_user):
+        return HTMLResponse("<h1>403 Доступ запрещен</h1>")
+    
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if project:
+        db.delete(project)
+        db.commit()
+    return RedirectResponse("/admin/projects", status_code=303)
+
+# ==================== ВЫХОД ====================
 
 @app.get("/logout")
 async def logout():
@@ -1438,6 +1596,12 @@ async def logout():
     response.delete_cookie("access_token")
     return response
 
+# ==================== ЗАПУСК ====================
+
 if __name__ == "__main__":
+    db = SessionLocal()
+    create_first_admin(db)
+    db.close()
+    
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
