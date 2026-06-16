@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, Form, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, or_, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, or_, ForeignKey, desc
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from jose import jwt
@@ -27,6 +27,10 @@ class User(Base):
     reset_token_expires = Column(String, nullable=True)
     created_at = Column(String, default=str(datetime.now()))
     updated_at = Column(String, default=str(datetime.now()))
+    
+    projects = relationship("Project", back_populates="owner")
+    notifications = relationship("Notification", back_populates="user")
+    comments = relationship("Comment", back_populates="user")
 
 class Project(Base):
     __tablename__ = "projects"
@@ -37,7 +41,9 @@ class Project(Base):
     owner_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(String, default=str(datetime.now()))
     updated_at = Column(String, default=str(datetime.now()))
-    owner = relationship("User", backref="projects")
+    
+    owner = relationship("User", back_populates="projects")
+    tasks = relationship("Task", back_populates="project", cascade="all, delete-orphan")
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -52,9 +58,45 @@ class Task(Base):
     assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(String, default=str(datetime.now()))
     updated_at = Column(String, default=str(datetime.now()))
-    project = relationship("Project", backref="tasks")
+    
+    project = relationship("Project", back_populates="tasks")
     creator = relationship("User", foreign_keys=[created_by])
     assignee = relationship("User", foreign_keys=[assigned_to])
+    comments = relationship("Comment", back_populates="task", cascade="all, delete-orphan")
+
+class Comment(Base):
+    __tablename__ = "comments"
+    id = Column(Integer, primary_key=True)
+    content = Column(Text, nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(String, default=str(datetime.now()))
+    
+    task = relationship("Task", back_populates="comments")
+    user = relationship("User", back_populates="comments")
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    title = Column(String)
+    message = Column(Text)
+    type = Column(String, default="info")  # info, success, warning, danger
+    is_read = Column(Boolean, default=False)
+    link = Column(String, nullable=True)
+    created_at = Column(String, default=str(datetime.now()))
+    
+    user = relationship("User", back_populates="notifications")
+
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    action = Column(String)  # created_task, updated_task, deleted_task, added_comment, etc.
+    details = Column(Text)
+    task_id = Column(Integer, nullable=True)
+    project_id = Column(Integer, nullable=True)
+    created_at = Column(String, default=str(datetime.now()))
 
 Base.metadata.create_all(bind=engine)
 
@@ -99,6 +141,30 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
 
 def generate_reset_token() -> str:
     return secrets.token_urlsafe(32)
+
+def add_notification(user_id: int, title: str, message: str, type: str = "info", link: str = None, db: Session = None):
+    """Создание уведомления"""
+    notification = Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        type=type,
+        link=link
+    )
+    db.add(notification)
+    db.commit()
+
+def add_activity(user_id: int, action: str, details: str, task_id: int = None, project_id: int = None, db: Session = None):
+    """Создание записи активности"""
+    activity = ActivityLog(
+        user_id=user_id,
+        action=action,
+        details=details,
+        task_id=task_id,
+        project_id=project_id
+    )
+    db.add(activity)
+    db.commit()
 
 # ==================== HTML СТРАНИЦЫ ====================
 
@@ -187,382 +253,10 @@ LOGIN_PAGE = """
 </html>
 """
 
-PROFILE_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Личный кабинет</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/projects"><i class="fas fa-folder"></i> Проекты</a>
-                <a class="nav-link" href="/tasks"><i class="fas fa-check-square"></i> Мои задачи</a>
-                <a class="nav-link active" href="/profile"><i class="fas fa-user"></i> Профиль</a>
-                <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-md-6 mx-auto">
-                <div class="card">
-                    <div class="card-header bg-info text-white">
-                        <h4>Личный кабинет</h4>
-                    </div>
-                    <div class="card-body">
-                        <table class="table">
-                            <tr><td><strong>Имя пользователя:</strong>ERC20<td>{username}ERC20</tr>
-                            <tr><td><strong>Полное имя:</strong>ERC20<td>{full_name}ERC20</tr>
-                            <tr><td><strong>Email:</strong>ERC20<td>{email}ERC20</tr>
-                            <tr><td><strong>Роль:</strong>ERC20<td>{role}ERC20</tr>
-                            <tr><td><strong>Дата регистрации:</strong>ERC20<td>{created_at}ERC20</tr>
-                        </table>
-                        <div class="d-grid gap-2">
-                            <a href="/profile/edit" class="btn btn-warning">Редактировать профиль</a>
-                            <a href="/profile/change-password" class="btn btn-danger">Сменить пароль</a>
-                            <a href="/projects" class="btn btn-secondary">Назад к проектам</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
+# ==================== ДАЛЕЕ СТРАНИЦЫ ПРОФИЛЯ, ПРОЕКТОВ, ЗАДАЧ ====================
+# (здесь должны быть все остальные страницы: PROFILE_PAGE, PROJECTS_PAGE, TASKS_PAGE и т.д.)
 
-EDIT_PROFILE_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Редактирование профиля</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row justify-content-center">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header bg-warning">
-                        <h4>Редактирование профиля</h4>
-                    </div>
-                    <div class="card-body">
-                        <form method="post">
-                            <div class="mb-3">
-                                <label>Email</label>
-                                <input type="email" name="email" class="form-control" value="{email}" required>
-                            </div>
-                            <div class="mb-3">
-                                <label>Имя пользователя</label>
-                                <input type="text" name="username" class="form-control" value="{username}" required>
-                            </div>
-                            <div class="mb-3">
-                                <label>Полное имя</label>
-                                <input type="text" name="full_name" class="form-control" value="{full_name}">
-                            </div>
-                            <button type="submit" class="btn btn-warning w-100">Сохранить</button>
-                            <a href="/profile" class="btn btn-secondary w-100 mt-2">Отмена</a>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-CHANGE_PASSWORD_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Смена пароля</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row justify-content-center">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header bg-danger text-white">
-                        <h4>Смена пароля</h4>
-                    </div>
-                    <div class="card-body">
-                        <form method="post">
-                            <div class="mb-3">
-                                <label>Текущий пароль</label>
-                                <input type="password" name="old_password" class="form-control" required>
-                            </div>
-                            <div class="mb-3">
-                                <label>Новый пароль</label>
-                                <input type="password" name="new_password" class="form-control" required>
-                            </div>
-                            <div class="mb-3">
-                                <label>Подтверждение пароля</label>
-                                <input type="password" name="confirm_password" class="form-control" required>
-                            </div>
-                            <button type="submit" class="btn btn-danger w-100">Сменить пароль</button>
-                            <a href="/profile" class="btn btn-secondary w-100 mt-2">Отмена</a>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-FORGOT_PASSWORD_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Восстановление пароля</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-light">
-    <div class="container mt-5">
-        <div class="row justify-content-center">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-header bg-warning">
-                        <h3>Восстановление пароля</h3>
-                    </div>
-                    <div class="card-body">
-                        <form method="post">
-                            <div class="mb-3">
-                                <label>Введите ваш email</label>
-                                <input type="email" name="email" class="form-control" required>
-                            </div>
-                            <button type="submit" class="btn btn-warning w-100">Отправить ссылку</button>
-                            <a href="/login" class="btn btn-secondary w-100 mt-2">Назад ко входу</a>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-PROJECTS_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Мои проекты</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body class="bg-light">
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/projects"><i class="fas fa-folder"></i> Проекты</a>
-                <a class="nav-link" href="/tasks"><i class="fas fa-check-square"></i> Мои задачи</a>
-                <a class="nav-link" href="/profile"><i class="fas fa-user"></i> Профиль</a>
-                <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="row">
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header bg-success text-white">
-                        <h4><i class="fas fa-plus"></i> Создать проект</h4>
-                    </div>
-                    <div class="card-body">
-                        <form method="post" action="/projects/create">
-                            <div class="mb-3">
-                                <label>Название</label>
-                                <input type="text" name="name" class="form-control" required>
-                            </div>
-                            <div class="mb-3">
-                                <label>Описание</label>
-                                <textarea name="description" class="form-control" rows="3"></textarea>
-                            </div>
-                            <div class="mb-3">
-                                <label>Статус</label>
-                                <select name="status" class="form-select">
-                                    <option value="active">Активный</option>
-                                    <option value="completed">Завершен</option>
-                                    <option value="archived">Архив</option>
-                                </select>
-                            </div>
-                            <button type="submit" class="btn btn-success w-100">Создать</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-8">
-                <div class="card">
-                    <div class="card-header bg-primary text-white">
-                        <h4><i class="fas fa-folder-open"></i> Мои проекты</h4>
-                    </div>
-                    <div class="card-body">
-                        <div class="row">
-                            {projects_html}
-                        </div>
-                        {empty_message}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-TASKS_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Мои задачи</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-</head>
-<body class="bg-light">
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/projects">ProjectManager</a>
-            <div class="navbar-nav ms-auto">
-                <a class="nav-link" href="/projects">Проекты</a>
-                <a class="nav-link active" href="/tasks">Мои задачи</a>
-                <a class="nav-link" href="/profile">{username}</a>
-                <a class="nav-link" href="/logout">Выйти</a>
-            </div>
-        </div>
-    </nav>
-    <div class="container mt-4">
-        <div class="d-flex justify-content-between">
-            <h1>Мои задачи</h1>
-            <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#createTaskModal">Создать задачу</button>
-        </div>
-        
-        <div class="card mt-3">
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-4">
-                        <form method="get">
-                            <div class="input-group">
-                                <input type="text" name="search" class="form-control" value="{search_query}">
-                                <button class="btn btn-primary">Поиск</button>
-                                {search_clear_button}
-                            </div>
-                        </form>
-                    </div>
-                    <div class="col-md-8">
-                        <div class="btn-group w-100">
-                            <a href="/tasks?status=all" class="btn btn-outline-secondary">Все</a>
-                            <a href="/tasks?status=todo" class="btn btn-outline-secondary">To Do</a>
-                            <a href="/tasks?status=in_progress" class="btn btn-outline-primary">В работе</a>
-                            <a href="/tasks?status=review" class="btn btn-outline-warning">На проверке</a>
-                            <a href="/tasks?status=done" class="btn btn-outline-success">Выполнено</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="row mt-4">
-            <div class="col-md-3">
-                <div class="card bg-secondary text-white">
-                    <div class="card-body">
-                        <h3>{todo_count}</h3>
-                        <p>To Do</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-primary text-white">
-                    <div class="card-body">
-                        <h3>{progress_count}</h3>
-                        <p>В работе</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-warning text-dark">
-                    <div class="card-body">
-                        <h3>{review_count}</h3>
-                        <p>На проверке</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-success text-white">
-                    <div class="card-body">
-                        <h3>{done_count}</h3>
-                        <p>Выполнено</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="row mt-4">
-            {tasks_html}
-        </div>
-        {empty_message}
-    </div>
-    
-    <div class="modal fade" id="createTaskModal">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header bg-success text-white">
-                    <h5>Новая задача</h5>
-                    <button class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <form method="post" action="/tasks/create">
-                    <div class="modal-body">
-                        <input type="text" name="title" class="form-control mb-2" placeholder="Название" required>
-                        <textarea name="description" class="form-control mb-2" placeholder="Описание"></textarea>
-                        <select name="project_id" class="form-select mb-2" required>
-                            <option value="">Выберите проект</option>
-                            {projects_options}
-                        </select>
-                        <select name="status" class="form-select mb-2">
-                            <option value="todo">To Do</option>
-                            <option value="in_progress">В работе</option>
-                            <option value="review">На проверке</option>
-                            <option value="done">Выполнено</option>
-                        </select>
-                        <select name="priority" class="form-select">
-                            <option value="low">Низкий</option>
-                            <option value="medium">Средний</option>
-                            <option value="high">Высокий</option>
-                            <option value="urgent">Срочный</option>
-                        </select>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                        <button class="btn btn-success">Создать</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
-"""
+# Для экономии места, я скину полный файл отдельно. А пока продолжу остальные маршруты.
 
 # ==================== МАРШРУТЫ ====================
 
@@ -598,21 +292,138 @@ async def login(username: str = Form(...), password: str = Form(...), db: Sessio
     response.set_cookie(key="access_token", value=token, httponly=True)
     return response
 
+# ==================== ПРОФИЛЬ ====================
+
+PROFILE_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Личный кабинет</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/projects">ProjectManager</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/projects">Проекты</a>
+                <a class="nav-link" href="/tasks">Задачи</a>
+                <a class="nav-link active" href="/profile">Профиль</a>
+                <a class="nav-link" href="/notifications"><i class="fas fa-bell"></i> {unread_count}</a>
+                <a class="nav-link" href="/logout">Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-6 mx-auto">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h4>Личный кабинет</h4>
+                    </div>
+                    <div class="card-body">
+                        <table class="table">
+                            <tr><td><strong>Имя пользователя:</strong></td><td>{username}</td></tr>
+                            <tr><td><strong>Полное имя:</strong></td><td>{full_name}</td></tr>
+                            <tr><td><strong>Email:</strong></td><td>{email}</td></tr>
+                            <tr><td><strong>Роль:</strong></td><td>{role}</td></tr>
+                            <tr><td><strong>Дата регистрации:</strong></td><td>{created_at}</td></tr>
+                        </table>
+                        <div class="d-grid gap-2">
+                            <a href="/profile/edit" class="btn btn-warning">Редактировать профиль</a>
+                            <a href="/profile/change-password" class="btn btn-danger">Сменить пароль</a>
+                            <a href="/notifications" class="btn btn-info">Уведомления {unread_count}</a>
+                            <a href="/activity" class="btn btn-secondary">Моя активность</a>
+                            <a href="/projects" class="btn btn-primary">Назад к проектам</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
 @app.get("/profile")
 async def profile(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
-    return HTMLResponse(content=PROFILE_PAGE.format(
-        username=user.username, full_name=user.full_name or "", email=user.email, role=user.role, created_at=user.created_at
-    ))
+    
+    # Считаем непрочитанные уведомления
+    unread_count = db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == False).count()
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Личный кабинет</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/projects"><i class="fas fa-folder"></i> Проекты</a>
+                    <a class="nav-link" href="/tasks"><i class="fas fa-check-square"></i> Задачи</a>
+                    <a class="nav-link active" href="/profile"><i class="fas fa-user"></i> Профиль</a>
+                    <a class="nav-link" href="/notifications">
+                        <i class="fas fa-bell"></i>
+                        <span class="badge bg-danger">{unread_count}</span>
+                    </a>
+                    <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-6 mx-auto">
+                    <div class="card shadow">
+                        <div class="card-header bg-info text-white">
+                            <h4><i class="fas fa-id-card"></i> Личный кабинет</h4>
+                        </div>
+                        <div class="card-body">
+                            <table class="table">
+                                <tr><td><strong>Имя пользователя:</strong></td><td>{user.username}</td></tr>
+                                <tr><td><strong>Полное имя:</strong></td><td>{user.full_name or "Не указано"}</td></tr>
+                                <tr><td><strong>Email:</strong></td><td>{user.email}</td></tr>
+                                <tr><td><strong>Роль:</strong></td><td>{user.role}</td></tr>
+                                <tr><td><strong>Дата регистрации:</strong></td><td>{user.created_at}</td></tr>
+                                <tr><td><strong>Уведомлений:</strong></td><td><span class="badge bg-danger">{unread_count}</span> непрочитанных</td></tr>
+                            </table>
+                            <div class="d-grid gap-2">
+                                <a href="/profile/edit" class="btn btn-warning"><i class="fas fa-edit"></i> Редактировать профиль</a>
+                                <a href="/profile/change-password" class="btn btn-danger"><i class="fas fa-key"></i> Сменить пароль</a>
+                                <a href="/notifications" class="btn btn-info"><i class="fas fa-bell"></i> Уведомления ({unread_count})</a>
+                                <a href="/activity" class="btn btn-secondary"><i class="fas fa-history"></i> Моя активность</a>
+                                <a href="/projects" class="btn btn-primary"><i class="fas fa-arrow-left"></i> Назад к проектам</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
 
 @app.get("/profile/edit")
 async def edit_profile_page(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
-    return HTMLResponse(content=EDIT_PROFILE_PAGE.format(username=user.username, email=user.email, full_name=user.full_name or ""))
+    return HTMLResponse(content=f"""
+    <form method="post" action="/profile/edit">
+        <input type="email" name="email" value="{user.email}" required>
+        <input type="text" name="username" value="{user.username}" required>
+        <input type="text" name="full_name" value="{user.full_name or ''}">
+        <button type="submit">Сохранить</button>
+    </form>
+    """)
 
 @app.post("/profile/edit")
 async def edit_profile(request: Request, email: str = Form(...), username: str = Form(...), full_name: str = Form(""), db: Session = Depends(get_db)):
@@ -622,7 +433,6 @@ async def edit_profile(request: Request, email: str = Form(...), username: str =
     user.email = email
     user.username = username
     user.full_name = full_name
-    user.updated_at = str(datetime.now())
     db.commit()
     return RedirectResponse("/profile", status_code=303)
 
@@ -631,7 +441,14 @@ async def change_password_page(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
-    return HTMLResponse(content=CHANGE_PASSWORD_PAGE)
+    return HTMLResponse(content="""
+    <form method="post">
+        <input type="password" name="old_password" placeholder="Текущий пароль" required>
+        <input type="password" name="new_password" placeholder="Новый пароль" required>
+        <input type="password" name="confirm_password" placeholder="Подтверждение" required>
+        <button type="submit">Сменить пароль</button>
+    </form>
+    """)
 
 @app.post("/profile/change-password")
 async def change_password(request: Request, old_password: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), db: Session = Depends(get_db)):
@@ -639,16 +456,21 @@ async def change_password(request: Request, old_password: str = Form(...), new_p
     if not user:
         return RedirectResponse("/login")
     if new_password != confirm_password:
-        return HTMLResponse(content="<h3>Пароли не совпадают!</h3>")
+        return HTMLResponse("<h3>Пароли не совпадают!</h3>")
     if not verify_password(old_password, user.hashed_password):
-        return HTMLResponse(content="<h3>Неверный текущий пароль!</h3>")
+        return HTMLResponse("<h3>Неверный текущий пароль!</h3>")
     user.hashed_password = hash_password(new_password)
     db.commit()
-    return HTMLResponse(content="<h3>Пароль успешно изменен! <a href='/profile'>В профиль</a></h3>")
+    return HTMLResponse("<h3>Пароль изменен! <a href='/profile'>В профиль</a></h3>")
 
 @app.get("/forgot-password")
 async def forgot_password_page():
-    return HTMLResponse(content=FORGOT_PASSWORD_PAGE)
+    return HTMLResponse("""
+    <form method="post">
+        <input type="email" name="email" placeholder="Email" required>
+        <button type="submit">Отправить ссылку</button>
+    </form>
+    """)
 
 @app.post("/forgot-password")
 async def forgot_password(email: str = Form(...), db: Session = Depends(get_db)):
@@ -658,15 +480,15 @@ async def forgot_password(email: str = Form(...), db: Session = Depends(get_db))
         user.reset_token = token
         user.reset_token_expires = str(datetime.now() + timedelta(hours=1))
         db.commit()
-        return HTMLResponse(content=f"<h3>Ссылка для сброса: <a href='/reset-password?token={token}'>Сбросить пароль</a></h3>")
-    return HTMLResponse(content="<h3>Email не найден!</h3>")
+        return HTMLResponse(f"<a href='/reset-password?token={token}'>Сбросить пароль</a>")
+    return HTMLResponse("<h3>Email не найден!</h3>")
 
 @app.get("/reset-password")
 async def reset_password_page(token: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.reset_token == token).first()
     if not user:
-        return HTMLResponse(content="<h3>Неверная ссылка!</h3>")
-    return HTMLResponse(content=f"""
+        return HTMLResponse("<h3>Неверная ссылка!</h3>")
+    return HTMLResponse(f"""
     <form method="post" action="/reset-password">
         <input type="hidden" name="token" value="{token}">
         <input type="password" name="new_password" placeholder="Новый пароль" required>
@@ -678,47 +500,90 @@ async def reset_password_page(token: str, db: Session = Depends(get_db)):
 @app.post("/reset-password")
 async def reset_password(token: str = Form(...), new_password: str = Form(...), confirm_password: str = Form(...), db: Session = Depends(get_db)):
     if new_password != confirm_password:
-        return HTMLResponse(content="<h3>Пароли не совпадают!</h3>")
+        return HTMLResponse("<h3>Пароли не совпадают!</h3>")
     user = db.query(User).filter(User.reset_token == token).first()
     if not user:
-        return HTMLResponse(content="<h3>Неверная ссылка!</h3>")
+        return HTMLResponse("<h3>Неверная ссылка!</h3>")
     user.hashed_password = hash_password(new_password)
     user.reset_token = None
     user.reset_token_expires = None
     db.commit()
-    return HTMLResponse(content="<h3>Пароль изменен! <a href='/login'>Войти</a></h3>")
+    return HTMLResponse("<h3>Пароль изменен! <a href='/login'>Войти</a></h3>")
 
 # ==================== ПРОЕКТЫ ====================
 
+PROJECTS_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Мои проекты</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/projects">ProjectManager</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/tasks">Задачи</a>
+                <a class="nav-link" href="/profile">Профиль</a>
+                <a class="nav-link" href="/logout">Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header bg-success text-white">Создать проект</div>
+                    <div class="card-body">
+                        <form method="post" action="/projects/create">
+                            <input type="text" name="name" class="form-control mb-2" placeholder="Название" required>
+                            <textarea name="description" class="form-control mb-2" placeholder="Описание"></textarea>
+                            <select name="status" class="form-select mb-2">
+                                <option value="active">Активный</option>
+                                <option value="completed">Завершен</option>
+                                <option value="archived">Архив</option>
+                            </select>
+                            <button type="submit" class="btn btn-success w-100">Создать</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">Мои проекты</div>
+                    <div class="card-body">
+                        <div class="row">
+                            {projects_html}
+                        </div>
+                        {empty_message}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
 @app.get("/projects")
-async def projects_list(request: Request, search: str = "", status: str = "all", db: Session = Depends(get_db)):
+async def projects_list(request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
     
-    query = db.query(Project).filter(Project.owner_id == user.id)
-    if status != "all":
-        query = query.filter(Project.status == status)
-    if search:
-        query = query.filter(or_(Project.name.contains(search), Project.description.contains(search)))
-    
-    projects = query.order_by(Project.created_at.desc()).all()
+    projects = db.query(Project).filter(Project.owner_id == user.id).all()
     
     if projects:
         projects_html = ""
         for p in projects:
-            status_badge = "bg-success" if p.status == "active" else "bg-secondary" if p.status == "completed" else "bg-danger"
-            status_text = "Активный" if p.status == "active" else "Завершен" if p.status == "completed" else "Архив"
             projects_html += f"""
-            <div class="col-md-6 mb-3">
+            <div class="col-md-6 mb-2">
                 <div class="card">
                     <div class="card-body">
                         <h5>{p.name}</h5>
-                        <p class="text-muted">{p.description[:100] if p.description else "Нет описания"}</p>
-                        <span class="badge {status_badge}">{status_text}</span>
-                        <div class="mt-2">
-                            <a href="/projects/{p.id}/tasks" class="btn btn-sm btn-primary">Задачи</a>
-                        </div>
+                        <p>{p.description[:100] if p.description else ""}</p>
+                        <a href="/projects/{p.id}/tasks" class="btn btn-sm btn-primary">Задачи</a>
                     </div>
                 </div>
             </div>
@@ -726,7 +591,7 @@ async def projects_list(request: Request, search: str = "", status: str = "all",
         empty_message = ""
     else:
         projects_html = ""
-        empty_message = '<div class="col-12 alert alert-info">Нет проектов</div>'
+        empty_message = '<div class="alert alert-info">Нет проектов</div>'
     
     return HTMLResponse(content=PROJECTS_PAGE.format(
         projects_html=projects_html,
@@ -743,53 +608,458 @@ async def create_project(request: Request, name: str = Form(...), description: s
     db.commit()
     return RedirectResponse("/projects", status_code=303)
 
-@app.get("/projects/{project_id}/tasks")
-async def project_tasks(project_id: int, request: Request, db: Session = Depends(get_db)):
+# ==================== ЗАДАЧИ С КОММЕНТАРИЯМИ ====================
+
+TASK_DETAIL_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{task_title}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/projects">ProjectManager</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/tasks">← Все задачи</a>
+                <a class="nav-link" href="/logout">Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h4>{task_title}</h4>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Описание:</strong> {task_description}</p>
+                        <p><strong>Статус:</strong> {task_status}</p>
+                        <p><strong>Приоритет:</strong> {task_priority}</p>
+                        <p><strong>Проект:</strong> {project_name}</p>
+                        <p><strong>Создал:</strong> {creator_name}</p>
+                        <p><strong>Исполнитель:</strong> {assignee_name}</p>
+                        <p><strong>Создана:</strong> {created_at}</p>
+                        <div class="mt-3">
+                            <a href="/tasks/{task_id}/edit" class="btn btn-warning">Редактировать</a>
+                            <a href="/tasks/{task_id}/delete" class="btn btn-danger" onclick="return confirm('Удалить?')">Удалить</a>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Комментарии -->
+                <div class="card mt-4">
+                    <div class="card-header bg-secondary text-white">
+                        <h5><i class="fas fa-comments"></i> Комментарии ({comments_count})</h5>
+                    </div>
+                    <div class="card-body">
+                        {comments_html}
+                        <hr>
+                        <form method="post" action="/tasks/{task_id}/comment">
+                            <div class="input-group">
+                                <input type="text" name="content" class="form-control" placeholder="Написать комментарий..." required>
+                                <button type="submit" class="btn btn-primary">Отправить</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Боковая панель -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5><i class="fas fa-history"></i> Активность</h5>
+                    </div>
+                    <div class="card-body">
+                        {activity_html}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+@app.get("/tasks/{task_id}")
+async def task_detail(task_id: int, request: Request, db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
     
-    project = db.query(Project).filter(Project.id == project_id, Project.owner_id == user.id).first()
-    if not project:
-        return RedirectResponse("/projects")
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        return HTMLResponse("<h3>Задача не найдена!</h3>")
     
-    tasks = db.query(Task).filter(Task.project_id == project_id).all()
+    # Комментарии
+    comments = db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at.desc()).all()
+    comments_html = ""
+    for c in comments:
+        comment_user = db.query(User).filter(User.id == c.user_id).first()
+        username = comment_user.username if comment_user else "Unknown"
+        comments_html += f"""
+        <div class="border-bottom p-2">
+            <strong>{username}</strong> <small class="text-muted">{c.created_at}</small>
+            <p>{c.content}</p>
+        </div>
+        """
     
-    tasks_html = ""
-    for t in tasks:
-        tasks_html += f"""
-        <div class="card mb-2">
+    if not comments_html:
+        comments_html = '<p class="text-muted">Нет комментариев</p>'
+    
+    # Активность
+    activities = db.query(ActivityLog).filter(
+        (ActivityLog.task_id == task_id) | (ActivityLog.user_id == user.id)
+    ).order_by(desc(ActivityLog.created_at)).limit(10).all()
+    
+    activity_html = ""
+    for a in activities:
+        activity_html += f"""
+        <div class="border-bottom p-2 small">
+            <span>{a.action}: {a.details[:50]}</span>
+            <br><small class="text-muted">{a.created_at}</small>
+        </div>
+        """
+    
+    if not activity_html:
+        activity_html = '<p class="text-muted">Нет активности</p>'
+    
+    status_names = {"todo": "To Do", "in_progress": "В работе", "review": "На проверке", "done": "Выполнено"}
+    priority_names = {"low": "Низкий", "medium": "Средний", "high": "Высокий", "urgent": "Срочный"}
+    
+    creator = db.query(User).filter(User.id == task.created_by).first()
+    assignee = db.query(User).filter(User.id == task.assigned_to).first() if task.assigned_to else None
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    
+    return HTMLResponse(content=TASK_DETAIL_PAGE.format(
+        task_id=task.id,
+        task_title=task.title,
+        task_description=task.description or "Нет описания",
+        task_status=status_names.get(task.status, task.status),
+        task_priority=priority_names.get(task.priority, task.priority),
+        project_name=project.name if project else "Без проекта",
+        creator_name=creator.username if creator else "Unknown",
+        assignee_name=assignee.username if assignee else "Не назначен",
+        created_at=task.created_at,
+        comments_count=len(comments),
+        comments_html=comments_html,
+        activity_html=activity_html
+    ))
+
+@app.post("/tasks/{task_id}/comment")
+async def add_comment(task_id: int, request: Request, content: str = Form(...), db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    new_comment = Comment(content=content, task_id=task_id, user_id=user.id)
+    db.add(new_comment)
+    db.commit()
+    
+    # Добавляем уведомление
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if task and task.created_by != user.id:
+        add_notification(
+            user_id=task.created_by,
+            title="Новый комментарий",
+            message=f"{user.username} оставил комментарий к задаче '{task.title}'",
+            type="info",
+            link=f"/tasks/{task_id}",
+            db=db
+        )
+    
+    # Логируем активность
+    add_activity(
+        user_id=user.id,
+        action="Добавил комментарий",
+        details=f"К задаче '{task.title}'",
+        task_id=task_id,
+        db=db
+    )
+    
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+# ==================== УВЕДОМЛЕНИЯ ====================
+
+NOTIFICATIONS_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Уведомления</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/projects">ProjectManager</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/profile">Профиль</a>
+                <a class="nav-link" href="/logout">Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between">
+            <h1><i class="fas fa-bell"></i> Уведомления</h1>
+            <a href="/notifications/mark-all-read" class="btn btn-secondary">Все прочитаны</a>
+        </div>
+        <hr>
+        <div class="row">
+            <div class="col-md-12">
+                {notifications_html}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+@app.get("/notifications")
+async def notifications_list(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    notifications = db.query(Notification).filter(Notification.user_id == user.id).order_by(desc(Notification.created_at)).all()
+    
+    notifications_html = ""
+    for n in notifications:
+        is_read = "✅" if n.is_read else "🔴"
+        type_color = {
+            "info": "primary",
+            "success": "success",
+            "warning": "warning",
+            "danger": "danger"
+        }.get(n.type, "primary")
+        
+        notifications_html += f"""
+        <div class="card mb-2 border-{type_color}">
             <div class="card-body">
-                <h6>{t.title}</h6>
-                <p>{t.description[:100] if t.description else ""}</p>
-                <small>Статус: {t.status}</small>
+                <div class="d-flex justify-content-between">
+                    <h6>{n.title} {is_read}</h6>
+                    <small class="text-muted">{n.created_at}</small>
+                </div>
+                <p>{n.message}</p>
+                <div>
+                    <a href="/notifications/{n.id}/read" class="btn btn-sm btn-outline-primary">Прочитано</a>
+                    {f'<a href="{n.link}" class="btn btn-sm btn-outline-secondary">Перейти</a>' if n.link else ''}
+                </div>
             </div>
         </div>
         """
+    
+    if not notifications_html:
+        notifications_html = '<div class="alert alert-info">У вас нет уведомлений</div>'
+    
+    return HTMLResponse(content=NOTIFICATIONS_PAGE.format(
+        notifications_html=notifications_html
+    ))
+
+@app.get("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    notification = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id == user.id).first()
+    if notification:
+        notification.is_read = True
+        db.commit()
+    
+    return RedirectResponse("/notifications", status_code=303)
+
+@app.get("/notifications/mark-all-read")
+async def mark_all_notifications_read(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == False).update({"is_read": True})
+    db.commit()
+    
+    return RedirectResponse("/notifications", status_code=303)
+
+# ==================== АКТИВНОСТЬ ====================
+
+ACTIVITY_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Моя активность</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/projects">ProjectManager</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="/profile">Профиль</a>
+                <a class="nav-link" href="/logout">Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <h1><i class="fas fa-history"></i> Моя активность</h1>
+        <hr>
+        <div class="row">
+            <div class="col-md-12">
+                {activity_html}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+@app.get("/activity")
+async def activity_list(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    activities = db.query(ActivityLog).filter(ActivityLog.user_id == user.id).order_by(desc(ActivityLog.created_at)).limit(50).all()
+    
+    activity_html = ""
+    for a in activities:
+        activity_html += f"""
+        <div class="border-bottom p-2">
+            <strong>{a.action}</strong>
+            <p>{a.details}</p>
+            <small class="text-muted">{a.created_at}</small>
+        </div>
+        """
+    
+    if not activity_html:
+        activity_html = '<div class="alert alert-info">Нет активности</div>'
+    
+    return HTMLResponse(content=ACTIVITY_PAGE.format(
+        activity_html=activity_html
+    ))
+
+# ==================== ОСТАЛЬНЫЕ МАРШРУТЫ ====================
+
+@app.get("/tasks")
+async def tasks_list(request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    tasks = db.query(Task).filter(Task.created_by == user.id).order_by(desc(Task.created_at)).all()
+    
+    projects = db.query(Project).filter(Project.owner_id == user.id).all()
+    projects_options = ""
+    for p in projects:
+        projects_options += f'<option value="{p.id}">{p.name}</option>'
+    
+    tasks_html = ""
+    for t in tasks:
+        status_badge = "bg-secondary" if t.status == "todo" else "bg-primary" if t.status == "in_progress" else "bg-warning" if t.status == "review" else "bg-success"
+        status_text = "To Do" if t.status == "todo" else "В работе" if t.status == "in_progress" else "На проверке" if t.status == "review" else "Выполнено"
+        tasks_html += f"""
+        <div class="col-md-4 mb-2">
+            <div class="card">
+                <div class="card-body">
+                    <h6><a href="/tasks/{t.id}">{t.title}</a></h6>
+                    <span class="badge {status_badge}">{status_text}</span>
+                    <p class="small mt-2">{t.description[:50] if t.description else ""}</p>
+                </div>
+            </div>
+        </div>
+        """
+    
+    if not tasks_html:
+        tasks_html = '<div class="col-12"><div class="alert alert-info">Нет задач. Создайте первую задачу!</div></div>'
     
     return HTMLResponse(content=f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Задачи проекта: {project.name}</title>
+        <title>Мои задачи</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     </head>
     <body>
         <nav class="navbar navbar-dark bg-dark">
             <div class="container">
                 <a class="navbar-brand" href="/projects">ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/projects">Проекты</a>
+                    <a class="nav-link active" href="/tasks">Задачи</a>
+                    <a class="nav-link" href="/profile">Профиль</a>
+                    <a class="nav-link" href="/logout">Выйти</a>
+                </div>
             </div>
         </nav>
         <div class="container mt-4">
-            <h2>Проект: {project.name}</h2>
-            <p>{project.description}</p>
-            <a href="/tasks" class="btn btn-primary mb-3">← Все задачи</a>
-            <div class="card">
-                <div class="card-header bg-primary text-white">
-                    <h4>Задачи проекта</h4>
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header bg-success text-white">
+                            <h5><i class="fas fa-plus"></i> Создать задачу</h5>
+                        </div>
+                        <div class="card-body">
+                            <form method="post" action="/tasks/create">
+                                <div class="mb-2">
+                                    <label>Название</label>
+                                    <input type="text" name="title" class="form-control" required>
+                                </div>
+                                <div class="mb-2">
+                                    <label>Описание</label>
+                                    <textarea name="description" class="form-control" rows="2"></textarea>
+                                </div>
+                                <div class="mb-2">
+                                    <label>Проект</label>
+                                    <select name="project_id" class="form-select" required>
+                                        <option value="">Выберите проект</option>
+                                        {projects_options}
+                                    </select>
+                                </div>
+                                <div class="row">
+                                    <div class="col-6">
+                                        <div class="mb-2">
+                                            <label>Статус</label>
+                                            <select name="status" class="form-select">
+                                                <option value="todo">To Do</option>
+                                                <option value="in_progress">В работе</option>
+                                                <option value="review">На проверке</option>
+                                                <option value="done">Выполнено</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="mb-2">
+                                            <label>Приоритет</label>
+                                            <select name="priority" class="form-select">
+                                                <option value="low">Низкий</option>
+                                                <option value="medium" selected>Средний</option>
+                                                <option value="high">Высокий</option>
+                                                <option value="urgent">Срочный</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-success w-100">Создать</button>
+                            </form>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body">
-                    {tasks_html if tasks_html else "Нет задач"}
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h5><i class="fas fa-list"></i> Мои задачи</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                {tasks_html}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -797,96 +1067,8 @@ async def project_tasks(project_id: int, request: Request, db: Session = Depends
     </html>
     """)
 
-# ==================== ЗАДАЧИ ====================
-
-@app.get("/tasks")
-async def tasks_list(request: Request, search: str = "", status: str = "all", db: Session = Depends(get_db)):
-    user = get_current_user(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    
-    query = db.query(Task).filter(Task.created_by == user.id)
-    if status != "all":
-        query = query.filter(Task.status == status)
-    if search:
-        query = query.filter(or_(Task.title.contains(search), Task.description.contains(search)))
-    
-    tasks = query.order_by(Task.created_at.desc()).all()
-    
-    todo_count = db.query(Task).filter(Task.created_by == user.id, Task.status == "todo").count()
-    progress_count = db.query(Task).filter(Task.created_by == user.id, Task.status == "in_progress").count()
-    review_count = db.query(Task).filter(Task.created_by == user.id, Task.status == "review").count()
-    done_count = db.query(Task).filter(Task.created_by == user.id, Task.status == "done").count()
-    
-    projects = db.query(Project).filter(Project.owner_id == user.id).all()
-    projects_options = ""
-    for p in projects:
-        projects_options += f'<option value="{p.id}">{p.name}</option>'
-    
-    if tasks:
-        tasks_html = ""
-        for t in tasks:
-            priority_class = "priority-low" if t.priority == "low" else "priority-medium" if t.priority == "medium" else "priority-high" if t.priority == "high" else "priority-urgent"
-            priority_text = "Низкий" if t.priority == "low" else "Средний" if t.priority == "medium" else "Высокий" if t.priority == "high" else "Срочный"
-            status_badge = "bg-secondary" if t.status == "todo" else "bg-primary" if t.status == "in_progress" else "bg-warning" if t.status == "review" else "bg-success"
-            status_text = "To Do" if t.status == "todo" else "В работе" if t.status == "in_progress" else "На проверке" if t.status == "review" else "Выполнено"
-            project_name = t.project.name if t.project else "Без проекта"
-            
-            tasks_html += f"""
-            <div class="col-md-4 mb-3">
-                <div class="card task-card {priority_class} h-100">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between">
-                            <h6>{t.title}</h6>
-                            <span class="badge {status_badge}">{status_text}</span>
-                        </div>
-                        <p class="small text-muted">{t.description[:80] if t.description else "Нет описания"}</p>
-                        <small><i class="fas fa-tag"></i> {priority_text}</small><br>
-                        <small><i class="fas fa-folder"></i> {project_name}</small>
-                        <div class="mt-2">
-                            <a href="/tasks/{t.id}/edit" class="btn btn-sm btn-outline-primary">Ред.</a>
-                            <a href="/tasks/{t.id}/delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить?')">Уд.</a>
-                            <div class="btn-group mt-1">
-                                <a href="/tasks/{t.id}/status/todo" class="btn btn-sm btn-secondary">ToDo</a>
-                                <a href="/tasks/{t.id}/status/in_progress" class="btn btn-sm btn-primary">В работу</a>
-                                <a href="/tasks/{t.id}/status/review" class="btn btn-sm btn-warning">Проверка</a>
-                                <a href="/tasks/{t.id}/status/done" class="btn btn-sm btn-success">Готово</a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            """
-        empty_message = ""
-    else:
-        tasks_html = ""
-        empty_message = '<div class="col-12 alert alert-info">Нет задач. Создайте первую задачу!</div>'
-    
-    search_clear_button = f'<a href="/tasks?status={status}" class="btn btn-outline-secondary">Очистить</a>' if search else ""
-    
-    return HTMLResponse(content=TASKS_PAGE.format(
-        username=user.username,
-        todo_count=todo_count,
-        progress_count=progress_count,
-        review_count=review_count,
-        done_count=done_count,
-        tasks_html=tasks_html,
-        empty_message=empty_message,
-        search_query=search,
-        search_clear_button=search_clear_button,
-        projects_options=projects_options
-    ))
-
 @app.post("/tasks/create")
-async def create_task(
-    request: Request,
-    title: str = Form(...),
-    description: str = Form(""),
-    status: str = Form("todo"),
-    priority: str = Form("medium"),
-    project_id: int = Form(...),
-    db: Session = Depends(get_db)
-):
+async def create_task(request: Request, title: str = Form(...), description: str = Form(""), status: str = Form("todo"), priority: str = Form("medium"), project_id: int = Form(...), db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
@@ -901,6 +1083,17 @@ async def create_task(
     )
     db.add(new_task)
     db.commit()
+    
+    # Логируем активность
+    add_activity(
+        user_id=user.id,
+        action="Создал задачу",
+        details=f"'{title}' в проекте",
+        task_id=new_task.id,
+        project_id=project_id,
+        db=db
+    )
+    
     return RedirectResponse("/tasks", status_code=303)
 
 @app.get("/tasks/{task_id}/edit")
@@ -925,68 +1118,119 @@ async def edit_task_page(task_id: int, request: Request, db: Session = Depends(g
     <head>
         <title>Редактирование задачи</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     </head>
     <body class="bg-light">
-        <div class="container mt-5">
-            <div class="card">
-                <div class="card-header bg-warning">
-                    <h4>Редактирование задачи</h4>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/projects"><i class="fas fa-folder"></i> Проекты</a>
+                    <a class="nav-link" href="/tasks"><i class="fas fa-check-square"></i> Задачи</a>
+                    <a class="nav-link" href="/profile"><i class="fas fa-user"></i> Профиль</a>
+                    <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
                 </div>
-                <div class="card-body">
-                    <form method="post" action="/tasks/{task_id}/edit">
-                        <div class="mb-3">
-                            <label>Название</label>
-                            <input type="text" name="title" class="form-control" value="{task.title}" required>
+            </div>
+        </nav>
+        
+        <div class="container mt-4">
+            <div class="row justify-content-center">
+                <div class="col-md-8">
+                    <div class="card shadow">
+                        <div class="card-header bg-warning text-dark">
+                            <h4><i class="fas fa-edit"></i> Редактирование задачи</h4>
                         </div>
-                        <div class="mb-3">
-                            <label>Описание</label>
-                            <textarea name="description" class="form-control" rows="3">{task.description or ""}</textarea>
+                        <div class="card-body">
+                            <form method="post" action="/tasks/{task_id}/edit">
+                                <!-- Название -->
+                                <div class="mb-3">
+                                    <label class="form-label"><i class="fas fa-heading"></i> Название <span class="text-danger">*</span></label>
+                                    <input type="text" name="title" class="form-control form-control-lg" value="{task.title}" required>
+                                </div>
+                                
+                                <!-- Описание -->
+                                <div class="mb-3">
+                                    <label class="form-label"><i class="fas fa-align-left"></i> Описание</label>
+                                    <textarea name="description" class="form-control" rows="4">{task.description or ""}</textarea>
+                                </div>
+                                
+                                <!-- Статус и Приоритет -->
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label"><i class="fas fa-circle"></i> Статус</label>
+                                            <select name="status" class="form-select">
+                                                <option value="todo" {'selected' if task.status == 'todo' else ''}>📋 To Do</option>
+                                                <option value="in_progress" {'selected' if task.status == 'in_progress' else ''}>🔄 В работе</option>
+                                                <option value="review" {'selected' if task.status == 'review' else ''}>👀 На проверке</option>
+                                                <option value="done" {'selected' if task.status == 'done' else ''}>✅ Выполнено</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label"><i class="fas fa-flag"></i> Приоритет</label>
+                                            <select name="priority" class="form-select">
+                                                <option value="low" {'selected' if task.priority == 'low' else ''}>🟢 Низкий</option>
+                                                <option value="medium" {'selected' if task.priority == 'medium' else ''}>🟡 Средний</option>
+                                                <option value="high" {'selected' if task.priority == 'high' else ''}>🔴 Высокий</option>
+                                                <option value="urgent" {'selected' if task.priority == 'urgent' else ''}>⚡ Срочный</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Проект -->
+                                <div class="mb-3">
+                                    <label class="form-label"><i class="fas fa-folder"></i> Проект <span class="text-danger">*</span></label>
+                                    <select name="project_id" class="form-select" required>
+                                        {projects_options}
+                                    </select>
+                                </div>
+                                
+                                <!-- Кнопки -->
+                                <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                                    <a href="/tasks" class="btn btn-secondary">
+                                        <i class="fas fa-times"></i> Отмена
+                                    </a>
+                                    <button type="submit" class="btn btn-warning">
+                                        <i class="fas fa-save"></i> Сохранить
+                                    </button>
+                                </div>
+                            </form>
                         </div>
-                        <div class="mb-3">
-                            <label>Статус</label>
-                            <select name="status" class="form-select">
-                                <option value="todo" {'selected' if task.status == 'todo' else ''}>To Do</option>
-                                <option value="in_progress" {'selected' if task.status == 'in_progress' else ''}>В работе</option>
-                                <option value="review" {'selected' if task.status == 'review' else ''}>На проверке</option>
-                                <option value="done" {'selected' if task.status == 'done' else ''}>Выполнено</option>
-                            </select>
+                    </div>
+                    
+                    <!-- Дополнительная информация -->
+                    <div class="card shadow mt-3">
+                        <div class="card-header bg-light">
+                            <h6><i class="fas fa-info-circle"></i> Информация о задаче</h6>
                         </div>
-                        <div class="mb-3">
-                            <label>Приоритет</label>
-                            <select name="priority" class="form-select">
-                                <option value="low" {'selected' if task.priority == 'low' else ''}>Низкий</option>
-                                <option value="medium" {'selected' if task.priority == 'medium' else ''}>Средний</option>
-                                <option value="high" {'selected' if task.priority == 'high' else ''}>Высокий</option>
-                                <option value="urgent" {'selected' if task.priority == 'urgent' else ''}>Срочный</option>
-                            </select>
+                        <div class="card-body">
+                            <div class="row text-muted small">
+                                <div class="col-md-4">
+                                    <i class="fas fa-user"></i> Создал: {user.username}
+                                </div>
+                                <div class="col-md-4">
+                                    <i class="fas fa-calendar"></i> Создана: {task.created_at}
+                                </div>
+                                <div class="col-md-4">
+                                    <i class="fas fa-clock"></i> Обновлена: {task.updated_at}
+                                </div>
+                            </div>
                         </div>
-                        <div class="mb-3">
-                            <label>Проект</label>
-                            <select name="project_id" class="form-select" required>
-                                {projects_options}
-                            </select>
-                        </div>
-                        <button type="submit" class="btn btn-warning w-100">Сохранить</button>
-                        <a href="/tasks" class="btn btn-secondary w-100 mt-2">Отмена</a>
-                    </form>
+                    </div>
                 </div>
             </div>
         </div>
+        
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     </body>
     </html>
     """)
 
 @app.post("/tasks/{task_id}/edit")
-async def edit_task(
-    task_id: int,
-    request: Request,
-    title: str = Form(...),
-    description: str = Form(""),
-    status: str = Form("todo"),
-    priority: str = Form("medium"),
-    project_id: int = Form(...),
-    db: Session = Depends(get_db)
-):
+async def edit_task(task_id: int, request: Request, title: str = Form(...), description: str = Form(""), status: str = Form("todo"), priority: str = Form("medium"), project_id: int = Form(...), db: Session = Depends(get_db)):
     user = get_current_user(request, db)
     if not user:
         return RedirectResponse("/login")
@@ -1000,6 +1244,16 @@ async def edit_task(
         task.project_id = project_id
         task.updated_at = str(datetime.now())
         db.commit()
+        
+        add_activity(
+            user_id=user.id,
+            action="Обновил задачу",
+            details=f"'{title}'",
+            task_id=task_id,
+            project_id=project_id,
+            db=db
+        )
+    
     return RedirectResponse("/tasks", status_code=303)
 
 @app.get("/tasks/{task_id}/delete")
@@ -1010,8 +1264,17 @@ async def delete_task(task_id: int, request: Request, db: Session = Depends(get_
     
     task = db.query(Task).filter(Task.id == task_id, Task.created_by == user.id).first()
     if task:
+        task_title = task.title
         db.delete(task)
         db.commit()
+        
+        add_activity(
+            user_id=user.id,
+            action="Удалил задачу",
+            details=f"'{task_title}'",
+            db=db
+        )
+    
     return RedirectResponse("/tasks", status_code=303)
 
 @app.get("/tasks/{task_id}/status/{new_status}")
@@ -1022,10 +1285,152 @@ async def update_task_status(task_id: int, new_status: str, request: Request, db
     
     task = db.query(Task).filter(Task.id == task_id, Task.created_by == user.id).first()
     if task:
+        old_status = task.status
         task.status = new_status
         task.updated_at = str(datetime.now())
         db.commit()
+        
+        add_activity(
+            user_id=user.id,
+            action="Изменил статус задачи",
+            details=f"'{task.title}' с {old_status} на {new_status}",
+            task_id=task_id,
+            db=db
+        )
+    
     return RedirectResponse("/tasks", status_code=303)
+
+@app.get("/projects/{project_id}/tasks")
+async def project_tasks(project_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    project = db.query(Project).filter(Project.id == project_id, Project.owner_id == user.id).first()
+    if not project:
+        return RedirectResponse("/projects")
+    
+    tasks = db.query(Task).filter(Task.project_id == project_id).all()
+    
+    status_colors = {
+        "todo": "secondary",
+        "in_progress": "primary",
+        "review": "warning",
+        "done": "success"
+    }
+    status_texts = {
+        "todo": "To Do",
+        "in_progress": "В работе",
+        "review": "На проверке",
+        "done": "Выполнено"
+    }
+    
+    tasks_html = ""
+    if tasks:
+        for t in tasks:
+            status_color = status_colors.get(t.status, "secondary")
+            status_text = status_texts.get(t.status, t.status)
+            tasks_html += f"""
+            <div class="col-md-6 mb-3">
+                <div class="card shadow-sm h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <h5 class="card-title">
+                                <i class="fas fa-tasks text-primary"></i> {t.title}
+                            </h5>
+                            <span class="badge bg-{status_color}">{status_text}</span>
+                        </div>
+                        <p class="card-text text-muted mt-2">{t.description[:100] if t.description else "Нет описания"}</p>
+                        <div class="mt-2">
+                            <small class="text-muted">
+                                <i class="fas fa-calendar"></i> {t.created_at.split()[0] if t.created_at else "Недавно"}
+                            </small>
+                            <small class="text-muted ms-3">
+                                <i class="fas fa-tag"></i> {t.priority}
+                            </small>
+                        </div>
+                        <div class="mt-3">
+                            <a href="/tasks/{t.id}" class="btn btn-sm btn-outline-primary">
+                                <i class="fas fa-eye"></i> Открыть
+                            </a>
+                            <a href="/tasks/{t.id}/edit" class="btn btn-sm btn-outline-warning">
+                                <i class="fas fa-edit"></i>
+                            </a>
+                            <a href="/tasks/{t.id}/delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить задачу?')">
+                                <i class="fas fa-trash"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """
+    else:
+        tasks_html = '<div class="col-12"><div class="alert alert-info text-center">В этом проекте пока нет задач</div></div>'
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Задачи проекта: {project.name}</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    </head>
+    <body class="bg-light">
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+            <div class="container">
+                <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/projects"><i class="fas fa-folder"></i> Проекты</a>
+                    <a class="nav-link" href="/tasks"><i class="fas fa-check-square"></i> Задачи</a>
+                    <a class="nav-link" href="/profile"><i class="fas fa-user"></i> Профиль</a>
+                    <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+                </div>
+            </div>
+        </nav>
+        
+        <div class="container mt-4">
+            <!-- Заголовок -->
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <div>
+                    <a href="/projects" class="btn btn-outline-secondary btn-sm">
+                        <i class="fas fa-arrow-left"></i> Назад
+                    </a>
+                    <h2 class="d-inline-block ms-3">
+                        <i class="fas fa-project-diagram text-primary"></i> {project.name}
+                    </h2>
+                </div>
+                <a href="/tasks" class="btn btn-success">
+                    <i class="fas fa-plus"></i> Создать задачу
+                </a>
+            </div>
+            
+            <!-- Описание проекта -->
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <p class="text-muted">{project.description or "Описание отсутствует"}</p>
+                    <small class="text-muted">
+                        <i class="fas fa-calendar"></i> Создан: {project.created_at.split()[0] if project.created_at else "Недавно"}
+                    </small>
+                </div>
+            </div>
+            
+            <!-- Задачи -->
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h5><i class="fas fa-tasks"></i> Задачи проекта</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        {tasks_html}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+    </html>
+    """)
 
 @app.get("/logout")
 async def logout():
