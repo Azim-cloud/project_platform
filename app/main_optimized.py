@@ -7,8 +7,6 @@ from jose import jwt
 from datetime import datetime, timedelta
 import hashlib
 import secrets
-from functools import lru_cache
-import time
 
 # ==================== БАЗА ДАННЫХ ====================
 DATABASE_URL = "sqlite:///./projects.db"
@@ -128,27 +126,6 @@ app = FastAPI()
 SECRET_KEY = "your-secret-key-change-in-production"
 ALGORITHM = "HS256"
 
-# ==================== КЕШ ====================
-user_cache = {}
-CACHE_TTL = 60
-
-def get_cached_user(username: str, db: Session):
-    cache_key = f"user_{username}"
-    now = time.time()
-    if cache_key in user_cache:
-        cached_data, timestamp = user_cache[cache_key]
-        if now - timestamp < CACHE_TTL:
-            return cached_data
-    user = db.query(User).filter(User.username == username).first()
-    if user:
-        user_cache[cache_key] = (user, now)
-    return user
-
-def invalidate_user_cache(username: str):
-    cache_key = f"user_{username}"
-    if cache_key in user_cache:
-        del user_cache[cache_key]
-
 # ==================== ФУНКЦИИ ====================
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
@@ -181,7 +158,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
-        return get_cached_user(username, db)
+        return db.query(User).filter(User.username == username).first()
     except:
         return None
 
