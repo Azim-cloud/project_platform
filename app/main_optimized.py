@@ -190,6 +190,8 @@ BASE_STYLE = """
     .btn { padding: 10px 20px; font-size: 15px; border-radius: 8px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s; }
     .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
     .btn-sm { padding: 6px 12px; font-size: 13px; min-height: 34px; }
+    .btn-danger { background-color: #dc3545; color: white; }
+    .btn-danger:hover { background-color: #c82333; }
     .form-control, .form-select { padding: 10px 14px; font-size: 15px; border-radius: 8px; min-height: 44px; border: 1px solid #ddd; }
     .form-control:focus, .form-select:focus { border-color: #0d6efd; box-shadow: 0 0 0 4px rgba(13,110,253,0.12); }
     .navbar { padding: 10px 0; }
@@ -312,16 +314,24 @@ def render_projects(user, db):
     projects = db.query(Project).filter(Project.owner_id == user.id).all()
     projects_html = ""
     for p in projects:
+        # Определяем цвет статуса
+        status_badge = "bg-success" if p.status == "active" else "bg-secondary" if p.status == "completed" else "bg-danger"
+        status_text = "Активный" if p.status == "active" else "Завершен" if p.status == "completed" else "Архив"
+        
         projects_html += f"""
         <div class="col-12 mb-2">
             <div class="card card-shadow fade-in">
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-start">
                         <h6 class="mb-0"><i class="fas fa-project-diagram text-primary"></i> {p.name}</h6>
-                        <span class="badge bg-success">Активный</span>
+                        <span class="badge {status_badge}">{status_text}</span>
                     </div>
                     <p class="text-muted small mt-1 mb-2">{p.description[:100] if p.description else "Нет описания"}</p>
-                    <a href="/projects/{p.id}/tasks" class="btn btn-primary w-100 btn-sm"><i class="fas fa-tasks"></i> Задачи</a>
+                    <div class="d-flex gap-1 flex-wrap">
+                        <a href="/projects/{p.id}/tasks" class="btn btn-primary btn-sm flex-fill"><i class="fas fa-tasks"></i> Задачи</a>
+                        <a href="/projects/{p.id}/edit" class="btn btn-warning btn-sm flex-fill"><i class="fas fa-edit"></i> Изменить</a>
+                        <a href="/projects/{p.id}/delete" class="btn btn-danger btn-sm flex-fill" onclick="return confirm('Удалить проект «{p.name}»? Все задачи будут удалены.')"><i class="fas fa-trash"></i> Удалить</a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -409,7 +419,13 @@ async def projects_list(request: Request, db: Session = Depends(get_db)):
                             <form method="post" action="/projects/create">
                                 <div class="mb-2"><input type="text" name="name" class="form-control" placeholder="Название" required></div>
                                 <div class="mb-2"><textarea name="description" class="form-control" rows="2" placeholder="Описание"></textarea></div>
-                                <div class="mb-2"><select name="status" class="form-select"><option value="active">Активный</option><option value="completed">Завершен</option><option value="archived">Архив</option></select></div>
+                                <div class="mb-2">
+                                    <select name="status" class="form-select">
+                                        <option value="active">Активный</option>
+                                        <option value="completed">Завершен</option>
+                                        <option value="archived">Архив</option>
+                                    </select>
+                                </div>
                                 <button type="submit" class="btn btn-success w-100"><i class="fas fa-save"></i> Создать</button>
                             </form>
                         </div>
@@ -438,6 +454,106 @@ async def create_project(request: Request, name: str = Form(...), description: s
     db.commit()
     return RedirectResponse("/projects", status_code=303)
 
+# ==================== РЕДАКТИРОВАНИЕ ПРОЕКТА ====================
+
+@app.get("/projects/{project_id}/edit")
+async def edit_project_page(project_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    project = db.query(Project).filter(Project.id == project_id, Project.owner_id == user.id).first()
+    if not project:
+        return HTMLResponse("<div class='container mt-4'><div class='alert alert-danger'>Проект не найден</div></div>")
+    
+    return HTMLResponse(content=f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Редактирование проекта</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+        {BASE_STYLE}
+    </head>
+    <body class="bg-light">
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
+            <div class="container">
+                <a class="navbar-brand" href="/projects"><i class="fas fa-tasks"></i> ProjectManager</a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/projects"><i class="fas fa-arrow-left"></i> Назад</a>
+                    <a class="nav-link" href="/logout"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-3">
+            <div class="row justify-content-center">
+                <div class="col-12 col-md-8 col-lg-6">
+                    <div class="card card-shadow">
+                        <div class="card-header bg-warning text-dark"><h6><i class="fas fa-edit"></i> Редактирование проекта</h6></div>
+                        <div class="card-body">
+                            <form method="post" action="/projects/{project_id}/edit">
+                                <div class="mb-2">
+                                    <input type="text" name="name" class="form-control" value="{project.name}" placeholder="Название" required>
+                                </div>
+                                <div class="mb-2">
+                                    <textarea name="description" class="form-control" rows="3">{project.description or ""}</textarea>
+                                </div>
+                                <div class="mb-2">
+                                    <select name="status" class="form-select">
+                                        <option value="active" {'selected' if project.status == 'active' else ''}>Активный</option>
+                                        <option value="completed" {'selected' if project.status == 'completed' else ''}>Завершен</option>
+                                        <option value="archived" {'selected' if project.status == 'archived' else ''}>Архив</option>
+                                    </select>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <a href="/projects" class="btn btn-secondary flex-fill"><i class="fas fa-times"></i> Отмена</a>
+                                    <button type="submit" class="btn btn-warning flex-fill"><i class="fas fa-save"></i> Сохранить</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    </body>
+    </html>
+    """)
+
+@app.post("/projects/{project_id}/edit")
+async def edit_project(project_id: int, request: Request, name: str = Form(...), description: str = Form(""), status: str = Form("active"), db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    project = db.query(Project).filter(Project.id == project_id, Project.owner_id == user.id).first()
+    if not project:
+        return HTMLResponse("<div class='container mt-4'><div class='alert alert-danger'>Проект не найден</div></div>")
+    
+    project.name = name
+    project.description = description
+    project.status = status
+    project.updated_at = str(datetime.now())
+    db.commit()
+    
+    return RedirectResponse("/projects", status_code=303)
+
+# ==================== УДАЛЕНИЕ ПРОЕКТА ====================
+
+@app.get("/projects/{project_id}/delete")
+async def delete_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    user = get_current_user(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    
+    project = db.query(Project).filter(Project.id == project_id, Project.owner_id == user.id).first()
+    if project:
+        db.delete(project)
+        db.commit()
+    
+    return RedirectResponse("/projects", status_code=303)
+
 # ==================== ЗАДАЧИ ====================
 
 @app.get("/tasks")
@@ -464,7 +580,10 @@ async def tasks_list(request: Request, db: Session = Depends(get_db)):
                         <span class="badge bg-{status_badge}">{status_text}</span>
                     </div>
                     <p class="text-muted small mt-1 mb-1">{t.description[:80] if t.description else "Нет описания"}</p>
-                    <small class="text-muted">Приоритет: {t.priority}</small>
+                    <div class="d-flex gap-1 flex-wrap mt-2">
+                        <small class="text-muted">Приоритет: {t.priority}</small>
+                        <a href="/tasks/{t.id}/delete" class="btn btn-sm btn-outline-danger" onclick="return confirm('Удалить задачу?')"><i class="fas fa-trash"></i></a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -538,6 +657,8 @@ async def create_task(request: Request, title: str = Form(...), description: str
     db.add(new_task)
     db.commit()
     return RedirectResponse("/tasks", status_code=303)
+
+# ==================== ДЕТАЛИ ЗАДАЧИ ====================
 
 @app.get("/tasks/{task_id}")
 async def task_detail(task_id: int, request: Request, db: Session = Depends(get_db)):
@@ -626,6 +747,8 @@ async def task_detail(task_id: int, request: Request, db: Session = Depends(get_
     </body>
     </html>
     """)
+
+# ==================== ОСТАЛЬНЫЕ МАРШРУТЫ ====================
 
 @app.post("/tasks/{task_id}/comment")
 async def add_comment(task_id: int, request: Request, content: str = Form(...), db: Session = Depends(get_db)):
